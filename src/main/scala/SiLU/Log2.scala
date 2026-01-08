@@ -1,18 +1,19 @@
-package log2
+package SiLU
 import chisel3._
 import chisel3.util._
 
-class Log2(val V: Int, val DW: Int = 16, val FW: Int = 8) extends Module {
+class Log2(val V: Int, val DW: Int = 8, val FW: Int = 8) extends Module {
   val io = IO(new Bundle {
-    val in  = Input(Vec(V, SInt(DW.W)))
-    val out = Output(Vec(V, SInt(DW.W)))
+    val in  = Input(Vec(V, SInt((DW+FW).W)))
+    val out = Output(Vec(V, SInt((DW+FW).W)))
   })
-    val intWidth = (DW - FW).U // 整数部分位宽
+    val intWidth = DW.U // 整数部分位宽
     val fracWidth = FW.U   // 小数部分位宽
+    val fixWidth = DW.U + FW.U // 固定点位宽
 
     for (i <- 0 until V) {
 
-        val leading_one_pos = DW.U - PriorityEncoder(Reverse(io.in(i).asUInt))
+        val leading_one_pos = fixWidth - PriorityEncoder(Reverse(io.in(i).asUInt))
 
         val x_gt_one = (leading_one_pos >= fracWidth)
 

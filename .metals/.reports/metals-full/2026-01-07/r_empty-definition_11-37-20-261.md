@@ -1,0 +1,106 @@
+error id: file://<WORKSPACE>/src/main/scala/GeLU/Top.scala:`<none>`.
+file://<WORKSPACE>/src/main/scala/GeLU/Top.scala
+empty definition using pc, found symbol in pc: `<none>`.
+empty definition using semanticdb
+empty definition using fallback
+non-local guesses:
+	 -CU.DataMen.
+	 -CU.DataMen#
+	 -CU.DataMen().
+	 -LoadU.DataMen.
+	 -LoadU.DataMen#
+	 -LoadU.DataMen().
+	 -StoreU.DataMen.
+	 -StoreU.DataMen#
+	 -StoreU.DataMen().
+	 -Common.DataMen.
+	 -Common.DataMen#
+	 -Common.DataMen().
+	 -chisel3/DataMen.
+	 -chisel3/DataMen#
+	 -chisel3/DataMen().
+	 -chisel3/util/DataMen.
+	 -chisel3/util/DataMen#
+	 -chisel3/util/DataMen().
+	 -Common.Param.DataMen.
+	 -Common.Param.DataMen#
+	 -Common.Param.DataMen().
+	 -DataMen.
+	 -DataMen#
+	 -DataMen().
+	 -scala/Predef.DataMen.
+	 -scala/Predef.DataMen#
+	 -scala/Predef.DataMen().
+offset: 77
+uri: file://<WORKSPACE>/src/main/scala/GeLU/Top.scala
+text:
+```scala
+package GeLU
+import CU._
+import LoadU._
+import StoreU._
+import Common.DataMen@@
+import chisel3._
+import chisel3.util._
+import Common.Param._
+
+class PipLine extends Module {
+  val io = IO (new Bundle() {
+    val layer_st = Input(Bool())
+
+    val data_in_st = Input(Bool())
+    val data_in = Input(UInt(MEM_WIDTH.W))
+    val data_addr = Input(UInt(log2Up(MEM_DEPTH).W))
+    val data_valid = Input(Bool())
+    val data_last = Input(Bool())
+    val data_ready= Output(Bool())
+
+    val res = Output(UInt(MEM_WIDTH.W))
+    val res_st = Output(Bool())
+    val res_addr = Output(UInt(log2Up(MEM_DEPTH).W))
+    val res_valid = Output(Bool())
+    val res_last = Output(Bool())
+    val res_ready = Input(Bool())
+  })
+
+  val mem_inst = Module(new DataMen(MEM_DEPTH, MEM_WIDTH))
+  val lu_inst = Module(new LoadU)
+  val cu_inst = Module(new CU)
+  val su_inst = Module(new StoreU)
+
+  mem_inst.io.w_st:= io.data_in_st
+  mem_inst.io.w_last := io.data_last
+  mem_inst.io.w_data := io.data_in
+  mem_inst.io.w_addr := io.data_addr
+  mem_inst.io.w_valid := io.data_valid
+  mem_inst.io.r_last := lu_inst.io.data_in_last
+  mem_inst.io.r_addr := lu_inst.io.data_in_addr
+
+
+  lu_inst.io.data_in := mem_inst.io.r_data
+  lu_inst.io.data_in_ready := mem_inst.io.r_ready
+  lu_inst.io.data_out_ready := io.res_ready
+
+  cu_inst.io.data_in := lu_inst.io.data_out
+  cu_inst.io.data_in_valid := lu_inst.io.data_out_valid
+
+  su_inst.io.data_in := cu_inst.io.data_out
+  su_inst.io.data_in_valid := cu_inst.io.data_out_valid
+
+  io.data_ready := mem_inst.io.w_ready
+
+  io.res := su_inst.io.data_out
+  io.res_st := lu_inst.io.data_out_start
+  io.res_addr := su_inst.io.data_out_addr
+  io.res_valid := su_inst.io.data_out_valid
+  io.res_last := su_inst.io.data_out_last
+}
+object PipLineGen extends App {
+  emitVerilog(new PipLine, Array("--target-dir", "generated"))
+}
+```
+
+
+#### Short summary: 
+
+empty definition using pc, found symbol in pc: `<none>`.
