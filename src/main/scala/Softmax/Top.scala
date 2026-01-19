@@ -1,4 +1,4 @@
-package GeLU
+package Softmax
 import Param._
 import chisel3._
 import chisel3.util._

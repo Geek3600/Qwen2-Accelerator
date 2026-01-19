@@ -1,6 +1,5 @@
 package SiLU
-import Common.Param._
-import Common.DataMen
+import Param._
 import chisel3._
 import chisel3.util._
 

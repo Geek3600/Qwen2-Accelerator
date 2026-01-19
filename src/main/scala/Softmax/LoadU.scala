@@ -1,7 +1,7 @@
 // for 0 to 768 / 12
 //  for 0 to 32
 
-package GeLU
+package Softmax
 import chisel3._
 import chisel3.util._
 import Param._
@@ -21,10 +21,6 @@ class LoadU extends Module {
   val batchsize_cnt = Wire(UInt(log2Up(BATCHSIZE).W))
   val batchsize_last = batchsize_cnt===(BATCHSIZE - 1).U
 
-  val vector_num = COL_D/V
-  val vector_cnt = Wire(UInt(log2Up(vector_num).W))
-  val vector_last = vector_cnt === (vector_num - 1).U
-
   val idle :: busy :: Nil = Enum(2)
   val state = RegInit(idle)
   val is_idle = state === idle
@@ -35,7 +31,7 @@ class LoadU extends Module {
     idle
   )
   val busy_mux = Mux(
-    vector_last && batchsize_last,
+    batchsize_last,
     idle,
     busy
   )
@@ -51,20 +47,9 @@ class LoadU extends Module {
     is_busy
   )
 
-  // 外层循环
-  vector_cnt := RegEnable(
-    Mux(
-      vector_last,
-      0.U,
-      vector_cnt + 1.U
-    ),
-    0.U,
-    is_busy && batchsize_last
-  )
-
-  val addr = vector_cnt + batchsize_cnt * vector_num.U
+  val addr = batchsize_cnt
   io.data_in_addr := addr
-  io.data_in_last := batchsize_last && vector_last
+  io.data_in_last := batchsize_last
 
   io.data_out := io.data_in
   io.data_out_valid := RegNext(is_busy, false.B)

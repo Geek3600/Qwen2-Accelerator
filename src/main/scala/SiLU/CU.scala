@@ -1,8 +1,8 @@
 package SiLU
-import Common._
+import SiLU._
 import chisel3._
 import chisel3.util._
-import Common.Param._
+import Param._
 
 class CU extends Module {
   val io = IO(new Bundle() {

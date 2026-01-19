@@ -1,6 +1,6 @@
 package SiLU
 
-import Common.Param._
+import Param._
 import SiLU._
 import chisel3._
 import chisel3.util._
