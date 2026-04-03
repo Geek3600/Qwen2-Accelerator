@@ -1,0 +1,13 @@
+{
+  "alias": "hidden_states_output",
+  "label": "hidden_states_output",
+  "occurrence": 0,
+  "shape": [
+    1,
+    688,
+    768
+  ],
+  "num_values": 528384,
+  "source_file": "weight/layernorm/125mopt_layernorm.json",
+  "binary_file": "artifacts/layernorm_example.hidden_states_output.f32.bin"
+}

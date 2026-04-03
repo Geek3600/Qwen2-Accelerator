@@ -1,0 +1,12 @@
+{
+  "stage": "qk",
+  "validator": "dm1fp32",
+  "top_module": "DM1FP32",
+  "token_start": 911,
+  "token_count": 1,
+  "head_idx": 0,
+  "cfg_seqlen": 0,
+  "input_beats": 32,
+  "output_beats": 1,
+  "out_scale_u32": 976621738
+}

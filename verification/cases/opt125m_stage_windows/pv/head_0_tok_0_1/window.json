@@ -1,0 +1,15 @@
+{
+  "stage": "pv",
+  "validator": "dm2quant",
+  "top_module": "DM2Quant",
+  "token_start": 0,
+  "token_count": 1,
+  "head_idx": 0,
+  "cfg_seqlen": 0,
+  "ctx_beats": 1,
+  "v_beats": 1,
+  "output_beats": 1,
+  "ctx_inv_scale_u32": 1065353216,
+  "ctx_zero_point_u8": 0,
+  "out_inv_scale_u32": 1011191788
+}

@@ -1,0 +1,12 @@
+{
+  "alias": "weight",
+  "label": "weight",
+  "occurrence": 0,
+  "shape": [
+    768,
+    768
+  ],
+  "num_values": 589824,
+  "source_file": "weight/QKVProj/q_125mopt.json",
+  "binary_file": "artifacts/q_proj_example.weight.f32.bin"
+}

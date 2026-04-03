@@ -1,0 +1,11 @@
+{
+  "alias": "gamma",
+  "label": "weight",
+  "occurrence": 0,
+  "shape": [
+    768
+  ],
+  "num_values": 768,
+  "source_file": "weight/layernorm/125mopt_layernorm.json",
+  "binary_file": "artifacts/layernorm_example.gamma.f32.bin"
+}

@@ -1,0 +1,678 @@
+Copyright 1986-2021 Xilinx, Inc. All Rights Reserved.
+-------------------------------------------------------------------------------------------
+| Tool Version     : Vivado v.2021.1 (lin64) Build 3247384 Thu Jun 10 19:36:07 MDT 2021
+| Date             : Tue Mar 24 09:12:18 2026
+| Host             : dsic-h3c-server03 running 64-bit CentOS Linux release 7.9.2009 (Core)
+| Command          : report_power -file power_fixed.rpt
+| Design           : Top
+| Device           : xcvu9p-flga2104-2-i
+| Design State     : synthesized
+| Grade            : industrial
+| Process          : typical
+| Characterization : Production
+-------------------------------------------------------------------------------------------
+
+Power Report
+
+Table of Contents
+-----------------
+1. Summary
+1.1 On-Chip Components
+1.2 Power Supply Summary
+1.3 Confidence Level
+2. Settings
+2.1 Environment
+2.2 Clock Constraints
+3. Detailed Reports
+3.1 By Hierarchy
+
+1. Summary
+----------
+
++--------------------------+--------------+
+| Total On-Chip Power (W)  | 17.295       |
+| Design Power Budget (W)  | Unspecified* |
+| Power Budget Margin (W)  | NA           |
+| Dynamic (W)              | 14.553       |
+| Device Static (W)        | 2.743        |
+| Effective TJA (C/W)      | 0.5          |
+| Max Ambient (C)          | 90.6         |
+| Junction Temperature (C) | 34.4         |
+| Confidence Level         | Medium       |
+| Setting File             | ---          |
+| Simulation Activity File | ---          |
+| Design Nets Matched      | NA           |
++--------------------------+--------------+
+* Specify Design Power Budget using, set_operating_conditions -design_power_budget <value in Watts>
+
+
+1.1 On-Chip Components
+----------------------
+
++--------------------------+-----------+----------+-----------+-----------------+
+| On-Chip                  | Power (W) | Used     | Available | Utilization (%) |
++--------------------------+-----------+----------+-----------+-----------------+
+| Clocks                   |     1.203 |        3 |       --- |             --- |
+| CLB Logic                |     7.174 |  1905340 |       --- |             --- |
+|   LUT as Logic           |     6.792 |   908568 |   1182240 |           76.85 |
+|   CARRY8                 |     0.317 |    48520 |    147780 |           32.83 |
+|   Register               |     0.064 |   791966 |   2364480 |           33.49 |
+|   LUT as Distributed RAM |    <0.001 |      296 |    591840 |            0.05 |
+|   LUT as Shift Register  |    <0.001 |       35 |    591840 |           <0.01 |
+|   Others                 |     0.000 |    10568 |       --- |             --- |
+|   F7/F8 Muxes            |     0.000 |   105396 |   1182240 |            8.91 |
+| Signals                  |     3.572 |  1346812 |       --- |             --- |
+| Block RAM                |     0.253 |    155.5 |      2160 |            7.20 |
+| URAM                     |     1.191 |      254 |       960 |           26.46 |
+| DSPs                     |     1.160 |     2325 |      6840 |           33.99 |
+| Static Power             |     2.743 |          |           |                 |
+| Total                    |    17.295 |          |           |                 |
++--------------------------+-----------+----------+-----------+-----------------+
+
+
+1.2 Power Supply Summary
+------------------------
+
++------------+-------------+-----------+-------------+------------+-------------+-------------+------------+
+| Source     | Voltage (V) | Total (A) | Dynamic (A) | Static (A) | Powerup (A) | Budget (A)  | Margin (A) |
++------------+-------------+-----------+-------------+------------+-------------+-------------+------------+
+| Vccint     |       0.850 |    18.232 |      17.082 |      1.150 |       NA    | Unspecified | NA         |
+| Vccint_io  |       0.850 |     0.272 |       0.000 |      0.272 |       NA    | Unspecified | NA         |
+| Vccbram    |       0.850 |     0.064 |       0.039 |      0.026 |       NA    | Unspecified | NA         |
+| Vccaux     |       1.800 |     0.631 |       0.000 |      0.631 |       NA    | Unspecified | NA         |
+| Vccaux_io  |       1.800 |     0.185 |       0.000 |      0.185 |       NA    | Unspecified | NA         |
+| Vcco33     |       3.300 |     0.000 |       0.000 |      0.000 |       NA    | Unspecified | NA         |
+| Vcco25     |       2.500 |     0.000 |       0.000 |      0.000 |       NA    | Unspecified | NA         |
+| Vcco18     |       1.800 |     0.000 |       0.000 |      0.000 |       NA    | Unspecified | NA         |
+| Vcco15     |       1.500 |     0.000 |       0.000 |      0.000 |       NA    | Unspecified | NA         |
+| Vcco135    |       1.350 |     0.000 |       0.000 |      0.000 |       NA    | Unspecified | NA         |
+| Vcco12     |       1.200 |     0.000 |       0.000 |      0.000 |       NA    | Unspecified | NA         |
+| Vcco10     |       1.000 |     0.000 |       0.000 |      0.000 |       NA    | Unspecified | NA         |
+| Vccadc     |       1.800 |     0.024 |       0.000 |      0.024 |       NA    | Unspecified | NA         |
+| MGTYAVcc   |       0.900 |     0.000 |       0.000 |      0.000 |       NA    | Unspecified | NA         |
+| MGTYAVtt   |       1.200 |     0.000 |       0.000 |      0.000 |       NA    | Unspecified | NA         |
+| MGTYVccaux |       1.800 |     0.000 |       0.000 |      0.000 |       NA    | Unspecified | NA         |
++------------+-------------+-----------+-------------+------------+-------------+-------------+------------+
+
+
+1.3 Confidence Level
+--------------------
+
++-----------------------------+------------+------------------------------------------------+------------------------------------------------------------------------------------------------------------+
+| User Input Data             | Confidence | Details                                        | Action                                                                                                     |
++-----------------------------+------------+------------------------------------------------+------------------------------------------------------------------------------------------------------------+
+| Design implementation state | Low        | Design is synthesized                          | Accuracy of the tool is not optimal until design is fully placed and routed                                |
+| Clock nodes activity        | High       | User specified more than 95% of clocks         |                                                                                                            |
+| I/O nodes activity          | High       | User specified more than 95% of inputs         |                                                                                                            |
+| Internal nodes activity     | Medium     | User specified less than 25% of internal nodes | Provide missing internal nodes activity with simulation results or by editing the "By Resource Type" views |
+| Device models               | High       | Device models are Production                   |                                                                                                            |
+|                             |            |                                                |                                                                                                            |
+| Overall confidence level    | Medium     |                                                |                                                                                                            |
++-----------------------------+------------+------------------------------------------------+------------------------------------------------------------------------------------------------------------+
+
+
+2. Settings
+-----------
+
+2.1 Environment
+---------------
+
++-----------------------+--------------------------+
+| Ambient Temp (C)      | 25.0                     |
+| ThetaJA (C/W)         | 0.5                      |
+| Airflow (LFM)         | 250                      |
+| Heat Sink             | medium (Medium Profile)  |
+| ThetaSA (C/W)         | 0.7                      |
+| Board Selection       | medium (10"x10")         |
+| # of Board Layers     | 12to15 (12 to 15 Layers) |
+| Board Temperature (C) | 25.0                     |
++-----------------------+--------------------------+
+
+
+2.2 Clock Constraints
+---------------------
+
++-------+--------+-----------------+
+| Clock | Domain | Constraint (ns) |
++-------+--------+-----------------+
+| clk   | clock  |            10.0 |
++-------+--------+-----------------+
+
+
+3. Detailed Reports
+-------------------
+
+3.1 By Hierarchy
+----------------
+
++----------------------+-----------+
+| Name                 | Power (W) |
++----------------------+-----------+
+| Top                  |    14.553 |
+|   atten              |     1.656 |
+|     dm1              |     0.340 |
+|       cu_inst        |     0.333 |
+|       mem_inst       |     0.007 |
+|     dm2              |     0.687 |
+|       ctxQuant       |     0.536 |
+|       ctxmemInst     |     0.015 |
+|       dmInst         |     0.117 |
+|       vmemInst       |     0.019 |
+|     softmax          |     0.622 |
+|       cuInst         |     0.559 |
+|       memInst        |     0.062 |
+|     vcache           |     0.006 |
+|       lsu_inst       |     0.002 |
+|       mem_inst       |     0.005 |
+|   ffndown            |     2.349 |
+|     bias_add         |     0.279 |
+|       add            |     0.023 |
+|       add_1          |     0.023 |
+|       add_10         |     0.023 |
+|       add_11         |     0.023 |
+|       add_2          |     0.023 |
+|       add_3          |     0.023 |
+|       add_4          |     0.023 |
+|       add_5          |     0.023 |
+|       add_6          |     0.023 |
+|       add_7          |     0.023 |
+|       add_8          |     0.023 |
+|       add_9          |     0.023 |
+|     cu_inst          |     1.606 |
+|       addTreeList_0  |     0.003 |
+|       addTreeList_1  |     0.003 |
+|       addTreeList_10 |     0.003 |
+|       addTreeList_11 |     0.003 |
+|       addTreeList_12 |     0.003 |
+|       addTreeList_13 |     0.003 |
+|       addTreeList_14 |     0.003 |
+|       addTreeList_15 |     0.003 |
+|       addTreeList_16 |     0.003 |
+|       addTreeList_17 |     0.003 |
+|       addTreeList_18 |     0.003 |
+|       addTreeList_19 |     0.003 |
+|       addTreeList_2  |     0.003 |
+|       addTreeList_20 |     0.003 |
+|       addTreeList_21 |     0.003 |
+|       addTreeList_22 |     0.003 |
+|       addTreeList_23 |     0.003 |
+|       addTreeList_24 |     0.003 |
+|       addTreeList_25 |     0.003 |
+|       addTreeList_26 |     0.003 |
+|       addTreeList_27 |     0.003 |
+|       addTreeList_28 |     0.003 |
+|       addTreeList_29 |     0.003 |
+|       addTreeList_3  |     0.003 |
+|       addTreeList_30 |     0.003 |
+|       addTreeList_31 |     0.003 |
+|       addTreeList_32 |     0.003 |
+|       addTreeList_33 |     0.003 |
+|       addTreeList_34 |     0.003 |
+|       addTreeList_35 |     0.003 |
+|       addTreeList_4  |     0.003 |
+|       addTreeList_5  |     0.003 |
+|       addTreeList_6  |     0.003 |
+|       addTreeList_7  |     0.003 |
+|       addTreeList_8  |     0.003 |
+|       addTreeList_9  |     0.003 |
+|       indata_pipreg  |     0.004 |
+|       toFp           |     0.209 |
+|     lw_inst          |     0.336 |
+|       weight_mem     |     0.336 |
+|     mem_inst         |     0.019 |
+|       mem0_ext       |     0.009 |
+|       mem1_ext       |     0.009 |
+|     su_inst          |     0.022 |
+|   ffnup              |     1.957 |
+|     cu_inst          |     1.552 |
+|       addTreeList_0  |     0.003 |
+|       addTreeList_1  |     0.003 |
+|       addTreeList_10 |     0.003 |
+|       addTreeList_11 |     0.003 |
+|       addTreeList_12 |     0.003 |
+|       addTreeList_13 |     0.003 |
+|       addTreeList_14 |     0.003 |
+|       addTreeList_15 |     0.003 |
+|       addTreeList_16 |     0.003 |
+|       addTreeList_17 |     0.003 |
+|       addTreeList_18 |     0.003 |
+|       addTreeList_19 |     0.003 |
+|       addTreeList_2  |     0.003 |
+|       addTreeList_20 |     0.003 |
+|       addTreeList_21 |     0.003 |
+|       addTreeList_22 |     0.003 |
+|       addTreeList_23 |     0.003 |
+|       addTreeList_24 |     0.003 |
+|       addTreeList_25 |     0.003 |
+|       addTreeList_26 |     0.003 |
+|       addTreeList_27 |     0.003 |
+|       addTreeList_28 |     0.003 |
+|       addTreeList_29 |     0.003 |
+|       addTreeList_3  |     0.003 |
+|       addTreeList_30 |     0.003 |
+|       addTreeList_31 |     0.003 |
+|       addTreeList_32 |     0.003 |
+|       addTreeList_33 |     0.003 |
+|       addTreeList_34 |     0.003 |
+|       addTreeList_35 |     0.003 |
+|       addTreeList_4  |     0.003 |
+|       addTreeList_5  |     0.003 |
+|       addTreeList_6  |     0.003 |
+|       addTreeList_7  |     0.003 |
+|       addTreeList_8  |     0.003 |
+|       addTreeList_9  |     0.003 |
+|       indata_pipreg  |     0.004 |
+|       requant        |     0.246 |
+|     lw_inst          |     0.337 |
+|       weight_mem     |     0.336 |
+|     mem_inst         |     0.019 |
+|       mem0_ext       |     0.009 |
+|       mem1_ext       |     0.009 |
+|     su_inst          |     0.001 |
+|   layernorm          |     1.891 |
+|     applyNorm        |     0.597 |
+|       add            |     0.019 |
+|       add_1          |     0.019 |
+|       add_10         |     0.019 |
+|       add_11         |     0.020 |
+|       add_2          |     0.019 |
+|       add_3          |     0.019 |
+|       add_4          |     0.019 |
+|       add_5          |     0.019 |
+|       add_6          |     0.019 |
+|       add_7          |     0.019 |
+|       add_8          |     0.019 |
+|       add_9          |     0.019 |
+|       normMul        |     0.009 |
+|       normMul_1      |     0.009 |
+|       normMul_10     |     0.009 |
+|       normMul_11     |     0.010 |
+|       normMul_2      |     0.009 |
+|       normMul_3      |     0.009 |
+|       normMul_4      |     0.009 |
+|       normMul_5      |     0.009 |
+|       normMul_6      |     0.009 |
+|       normMul_7      |     0.009 |
+|       normMul_8      |     0.009 |
+|       normMul_9      |     0.009 |
+|       scaleMul       |     0.010 |
+|       scaleMul_1     |     0.010 |
+|       scaleMul_10    |     0.010 |
+|       scaleMul_11    |     0.010 |
+|       scaleMul_2     |     0.010 |
+|       scaleMul_3     |     0.010 |
+|       scaleMul_4     |     0.010 |
+|       scaleMul_5     |     0.010 |
+|       scaleMul_6     |     0.010 |
+|       scaleMul_7     |     0.010 |
+|       scaleMul_8     |     0.010 |
+|       scaleMul_9     |     0.010 |
+|       sub            |     0.012 |
+|       sub_1          |     0.012 |
+|       sub_10         |     0.012 |
+|       sub_11         |     0.017 |
+|       sub_2          |     0.012 |
+|       sub_3          |     0.012 |
+|       sub_4          |     0.012 |
+|       sub_5          |     0.012 |
+|       sub_6          |     0.012 |
+|       sub_7          |     0.012 |
+|       sub_8          |     0.012 |
+|       sub_9          |     0.012 |
+|     div              |     0.002 |
+|       divSqrt        |     0.002 |
+|     inputMem_ext     |     0.056 |
+|     laneSqSum        |     0.302 |
+|       mul            |     0.005 |
+|       mul_1          |     0.005 |
+|       mul_10         |     0.005 |
+|       mul_11         |     0.009 |
+|       mul_2          |     0.005 |
+|       mul_3          |     0.006 |
+|       mul_4          |     0.005 |
+|       mul_5          |     0.005 |
+|       mul_6          |     0.005 |
+|       mul_7          |     0.005 |
+|       mul_8          |     0.005 |
+|       mul_9          |     0.005 |
+|       sum            |     0.233 |
+|     laneSum          |     0.228 |
+|       add01          |     0.015 |
+|       add0123        |     0.027 |
+|       add0to7        |     0.027 |
+|       add1011        |     0.019 |
+|       add23          |     0.015 |
+|       add45          |     0.015 |
+|       add4567        |     0.027 |
+|       add67          |     0.015 |
+|       add89          |     0.015 |
+|       add891011      |     0.028 |
+|       addAll         |     0.025 |
+|     meanMul          |     0.006 |
+|       mul            |     0.003 |
+|     meanPow2         |     0.013 |
+|       mul            |     0.007 |
+|     meanSqMul        |     0.005 |
+|       mul            |     0.003 |
+|     quant            |     0.469 |
+|       add            |     0.022 |
+|       add_1          |     0.022 |
+|       add_10         |     0.022 |
+|       add_11         |     0.022 |
+|       add_2          |     0.022 |
+|       add_3          |     0.022 |
+|       add_4          |     0.022 |
+|       add_5          |     0.022 |
+|       add_6          |     0.022 |
+|       add_7          |     0.022 |
+|       add_8          |     0.022 |
+|       add_9          |     0.022 |
+|       mul            |     0.012 |
+|       mul_1          |     0.012 |
+|       mul_10         |     0.012 |
+|       mul_11         |     0.012 |
+|       mul_2          |     0.012 |
+|       mul_3          |     0.012 |
+|       mul_4          |     0.012 |
+|       mul_5          |     0.012 |
+|       mul_6          |     0.012 |
+|       mul_7          |     0.012 |
+|       mul_8          |     0.012 |
+|       mul_9          |     0.012 |
+|       toInt          |     0.005 |
+|       toInt_1        |     0.005 |
+|       toInt_10       |     0.005 |
+|       toInt_11       |     0.005 |
+|       toInt_2        |     0.005 |
+|       toInt_3        |     0.005 |
+|       toInt_4        |     0.005 |
+|       toInt_5        |     0.005 |
+|       toInt_6        |     0.005 |
+|       toInt_7        |     0.005 |
+|       toInt_8        |     0.005 |
+|       toInt_9        |     0.005 |
+|     sqAdd            |     0.008 |
+|       add            |     0.006 |
+|     sqrt             |     0.003 |
+|       divSqrt        |     0.002 |
+|     sumAdd           |     0.015 |
+|       add            |     0.010 |
+|     varAddEps        |     0.018 |
+|       add            |     0.012 |
+|     varSub           |     0.024 |
+|       sub            |     0.015 |
+|   layernorm2         |     1.704 |
+|     applyNorm        |     0.531 |
+|       add            |     0.019 |
+|       add_1          |     0.019 |
+|       add_10         |     0.019 |
+|       add_11         |     0.019 |
+|       add_2          |     0.019 |
+|       add_3          |     0.019 |
+|       add_4          |     0.019 |
+|       add_5          |     0.019 |
+|       add_6          |     0.019 |
+|       add_7          |     0.019 |
+|       add_8          |     0.019 |
+|       add_9          |     0.019 |
+|       normMul        |     0.007 |
+|       normMul_1      |     0.007 |
+|       normMul_10     |     0.007 |
+|       normMul_11     |     0.009 |
+|       normMul_2      |     0.007 |
+|       normMul_3      |     0.007 |
+|       normMul_4      |     0.007 |
+|       normMul_5      |     0.007 |
+|       normMul_6      |     0.007 |
+|       normMul_7      |     0.007 |
+|       normMul_8      |     0.007 |
+|       normMul_9      |     0.007 |
+|       scaleMul       |     0.009 |
+|       scaleMul_1     |     0.009 |
+|       scaleMul_10    |     0.009 |
+|       scaleMul_11    |     0.010 |
+|       scaleMul_2     |     0.009 |
+|       scaleMul_3     |     0.009 |
+|       scaleMul_4     |     0.009 |
+|       scaleMul_5     |     0.009 |
+|       scaleMul_6     |     0.009 |
+|       scaleMul_7     |     0.009 |
+|       scaleMul_8     |     0.009 |
+|       scaleMul_9     |     0.009 |
+|       sub            |     0.008 |
+|       sub_1          |     0.008 |
+|       sub_10         |     0.008 |
+|       sub_11         |     0.011 |
+|       sub_2          |     0.008 |
+|       sub_3          |     0.008 |
+|       sub_4          |     0.008 |
+|       sub_5          |     0.008 |
+|       sub_6          |     0.008 |
+|       sub_7          |     0.008 |
+|       sub_8          |     0.008 |
+|       sub_9          |     0.008 |
+|     div              |     0.002 |
+|       divSqrt        |     0.002 |
+|     inputMem_ext     |     0.057 |
+|     laneSqSum        |     0.267 |
+|       mul            |     0.007 |
+|       mul_1          |     0.004 |
+|       mul_10         |     0.004 |
+|       mul_11         |     0.005 |
+|       mul_2          |     0.004 |
+|       mul_3          |     0.004 |
+|       mul_4          |     0.004 |
+|       mul_5          |     0.004 |
+|       mul_6          |     0.004 |
+|       mul_7          |     0.004 |
+|       mul_8          |     0.004 |
+|       mul_9          |     0.004 |
+|       sum            |     0.216 |
+|     laneSum          |     0.196 |
+|       add01          |     0.016 |
+|       add0123        |     0.025 |
+|       add0to7        |     0.026 |
+|       add1011        |     0.013 |
+|       add23          |     0.011 |
+|       add45          |     0.011 |
+|       add4567        |     0.023 |
+|       add67          |     0.011 |
+|       add89          |     0.011 |
+|       add891011      |     0.025 |
+|       addAll         |     0.025 |
+|     meanMul          |     0.003 |
+|       mul            |     0.002 |
+|     meanPow2         |     0.009 |
+|       mul            |     0.005 |
+|     meanSqMul        |     0.002 |
+|       mul            |     0.001 |
+|     quant            |     0.468 |
+|       add            |     0.022 |
+|       add_1          |     0.022 |
+|       add_10         |     0.022 |
+|       add_11         |     0.022 |
+|       add_2          |     0.022 |
+|       add_3          |     0.022 |
+|       add_4          |     0.022 |
+|       add_5          |     0.022 |
+|       add_6          |     0.022 |
+|       add_7          |     0.022 |
+|       add_8          |     0.022 |
+|       add_9          |     0.022 |
+|       mul            |     0.012 |
+|       mul_1          |     0.012 |
+|       mul_10         |     0.012 |
+|       mul_11         |     0.012 |
+|       mul_2          |     0.012 |
+|       mul_3          |     0.012 |
+|       mul_4          |     0.012 |
+|       mul_5          |     0.012 |
+|       mul_6          |     0.012 |
+|       mul_7          |     0.012 |
+|       mul_8          |     0.012 |
+|       mul_9          |     0.012 |
+|       toInt          |     0.005 |
+|       toInt_1        |     0.005 |
+|       toInt_10       |     0.005 |
+|       toInt_11       |     0.005 |
+|       toInt_2        |     0.005 |
+|       toInt_3        |     0.005 |
+|       toInt_4        |     0.005 |
+|       toInt_5        |     0.005 |
+|       toInt_6        |     0.005 |
+|       toInt_7        |     0.005 |
+|       toInt_8        |     0.005 |
+|       toInt_9        |     0.005 |
+|     sqAdd            |     0.007 |
+|       add            |     0.005 |
+|     sqrt             |     0.003 |
+|       divSqrt        |     0.002 |
+|     sumAdd           |     0.013 |
+|       add            |     0.009 |
+|     varAddEps        |     0.019 |
+|       add            |     0.013 |
+|     varSub           |     0.019 |
+|       sub            |     0.012 |
+|   outlinear          |     2.403 |
+|     bias_add         |     0.279 |
+|       add            |     0.023 |
+|       add_1          |     0.023 |
+|       add_10         |     0.023 |
+|       add_11         |     0.023 |
+|       add_2          |     0.023 |
+|       add_3          |     0.023 |
+|       add_4          |     0.023 |
+|       add_5          |     0.023 |
+|       add_6          |     0.023 |
+|       add_7          |     0.023 |
+|       add_8          |     0.023 |
+|       add_9          |     0.023 |
+|     cu_inst          |     1.597 |
+|       addTreeList_0  |     0.003 |
+|       addTreeList_1  |     0.003 |
+|       addTreeList_10 |     0.003 |
+|       addTreeList_11 |     0.003 |
+|       addTreeList_12 |     0.003 |
+|       addTreeList_13 |     0.003 |
+|       addTreeList_14 |     0.003 |
+|       addTreeList_15 |     0.003 |
+|       addTreeList_16 |     0.003 |
+|       addTreeList_17 |     0.003 |
+|       addTreeList_18 |     0.003 |
+|       addTreeList_19 |     0.003 |
+|       addTreeList_2  |     0.003 |
+|       addTreeList_20 |     0.003 |
+|       addTreeList_21 |     0.003 |
+|       addTreeList_22 |     0.003 |
+|       addTreeList_23 |     0.003 |
+|       addTreeList_24 |     0.003 |
+|       addTreeList_25 |     0.003 |
+|       addTreeList_26 |     0.003 |
+|       addTreeList_27 |     0.003 |
+|       addTreeList_28 |     0.003 |
+|       addTreeList_29 |     0.003 |
+|       addTreeList_3  |     0.003 |
+|       addTreeList_30 |     0.003 |
+|       addTreeList_31 |     0.003 |
+|       addTreeList_32 |     0.003 |
+|       addTreeList_33 |     0.003 |
+|       addTreeList_34 |     0.003 |
+|       addTreeList_35 |     0.003 |
+|       addTreeList_4  |     0.003 |
+|       addTreeList_5  |     0.003 |
+|       addTreeList_6  |     0.003 |
+|       addTreeList_7  |     0.003 |
+|       addTreeList_8  |     0.003 |
+|       addTreeList_9  |     0.003 |
+|       indata_pipreg  |     0.004 |
+|       toFp           |     0.209 |
+|     lw_inst          |     0.102 |
+|       weight_mem     |     0.101 |
+|     mem_inst         |     0.018 |
+|       mem0_ext       |     0.009 |
+|       mem1_ext       |     0.009 |
+|     su_inst          |     0.022 |
+|   qkvlinear          |     1.915 |
+|     cu_inst          |     1.541 |
+|       addTreeList_0  |     0.003 |
+|       addTreeList_1  |     0.003 |
+|       addTreeList_10 |     0.003 |
+|       addTreeList_11 |     0.003 |
+|       addTreeList_12 |     0.003 |
+|       addTreeList_13 |     0.003 |
+|       addTreeList_14 |     0.003 |
+|       addTreeList_15 |     0.003 |
+|       addTreeList_16 |     0.003 |
+|       addTreeList_17 |     0.003 |
+|       addTreeList_18 |     0.003 |
+|       addTreeList_19 |     0.003 |
+|       addTreeList_2  |     0.003 |
+|       addTreeList_20 |     0.003 |
+|       addTreeList_21 |     0.003 |
+|       addTreeList_22 |     0.003 |
+|       addTreeList_23 |     0.003 |
+|       addTreeList_24 |     0.003 |
+|       addTreeList_25 |     0.003 |
+|       addTreeList_26 |     0.003 |
+|       addTreeList_27 |     0.003 |
+|       addTreeList_28 |     0.003 |
+|       addTreeList_29 |     0.003 |
+|       addTreeList_3  |     0.003 |
+|       addTreeList_30 |     0.003 |
+|       addTreeList_31 |     0.003 |
+|       addTreeList_32 |     0.003 |
+|       addTreeList_33 |     0.003 |
+|       addTreeList_34 |     0.003 |
+|       addTreeList_35 |     0.003 |
+|       addTreeList_4  |     0.003 |
+|       addTreeList_5  |     0.003 |
+|       addTreeList_6  |     0.003 |
+|       addTreeList_7  |     0.003 |
+|       addTreeList_8  |     0.003 |
+|       addTreeList_9  |     0.003 |
+|       indata_pipreg  |     0.004 |
+|       requant        |     0.246 |
+|     lw_inst          |     0.232 |
+|       weight_mem     |     0.231 |
+|     mem_inst         |     0.019 |
+|       mem0_ext       |     0.009 |
+|       mem1_ext       |     0.009 |
+|     su_inst          |     0.001 |
+|   resadd             |     0.355 |
+|     add              |     0.256 |
+|       add            |     0.021 |
+|       add_1          |     0.021 |
+|       add_10         |     0.021 |
+|       add_11         |     0.021 |
+|       add_2          |     0.021 |
+|       add_3          |     0.021 |
+|       add_4          |     0.021 |
+|       add_5          |     0.021 |
+|       add_6          |     0.021 |
+|       add_7          |     0.021 |
+|       add_8          |     0.021 |
+|       add_9          |     0.021 |
+|     mem              |     0.094 |
+|       mem_list_0     |     0.030 |
+|       mem_list_1     |     0.030 |
+|       mem_list_2     |     0.030 |
+|   resadd2            |     0.323 |
+|     add              |     0.255 |
+|       add            |     0.021 |
+|       add_1          |     0.021 |
+|       add_10         |     0.021 |
+|       add_11         |     0.021 |
+|       add_2          |     0.021 |
+|       add_3          |     0.021 |
+|       add_4          |     0.021 |
+|       add_5          |     0.021 |
+|       add_6          |     0.021 |
+|       add_7          |     0.021 |
+|       add_8          |     0.021 |
+|       add_9          |     0.021 |
+|     mem              |     0.063 |
+|       mem0_ext       |     0.031 |
+|       mem1_ext       |     0.031 |
++----------------------+-----------+
+
+

@@ -1,0 +1,13 @@
+{
+  "stage": "fc2",
+  "validator": "ffndown",
+  "top_module": "FFNDownFP32",
+  "token_start": 910,
+  "token_count": 2,
+  "cfg_seqlen": 1,
+  "input_beats": 512,
+  "weight_init_words": 67584,
+  "bias_init_words": 64,
+  "output_beats": 128,
+  "out_scale_u32": 981909510
+}

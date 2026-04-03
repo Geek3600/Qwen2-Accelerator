@@ -1,0 +1,11 @@
+{
+  "alias": "bias",
+  "label": "bias",
+  "occurrence": 0,
+  "shape": [
+    768
+  ],
+  "num_values": 768,
+  "source_file": "weight/QKVProj/q_125mopt.json",
+  "binary_file": "artifacts/q_proj_example.bias.f32.bin"
+}

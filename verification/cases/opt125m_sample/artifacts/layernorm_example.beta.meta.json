@@ -1,0 +1,11 @@
+{
+  "alias": "beta",
+  "label": "weight",
+  "occurrence": 1,
+  "shape": [
+    768
+  ],
+  "num_values": 768,
+  "source_file": "weight/layernorm/125mopt_layernorm.json",
+  "binary_file": "artifacts/layernorm_example.beta.f32.bin"
+}

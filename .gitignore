@@ -1,5 +1,19 @@
 ### Project Specific stuff
 test_run_dir/*
+weight/*.json
+vivado_results_fixed/*.v
+backups/
+obj_dir/
+.metals/
+waveforms/
+old/old1_full_backup/
+scripts/verification/__pycache__/
+verification/cases/**/artifacts/*.bin
+verification/cases/**/artifacts/*.u32.bin
+*.fst
+*.tar.gz
+*.tar.zst
+
 ### XilinxISE template
 # intermediate build files
 *.bgn

@@ -1,0 +1,13 @@
+{
+  "stage": "out_proj",
+  "validator": "outlinearfp32",
+  "top_module": "OutLinearFP32",
+  "token_start": 910,
+  "token_count": 2,
+  "cfg_seqlen": 1,
+  "input_beats": 24,
+  "weight_init_words": 16896,
+  "bias_init_words": 64,
+  "output_beats": 128,
+  "out_scale_u32": 944947243
+}

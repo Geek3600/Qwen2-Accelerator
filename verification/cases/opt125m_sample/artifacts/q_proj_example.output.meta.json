@@ -1,0 +1,13 @@
+{
+  "alias": "output",
+  "label": "qout_put",
+  "occurrence": 0,
+  "shape": [
+    1,
+    688,
+    768
+  ],
+  "num_values": 528384,
+  "source_file": "weight/QKVProj/q_125mopt.json",
+  "binary_file": "artifacts/q_proj_example.output.f32.bin"
+}

@@ -1,0 +1,10 @@
+{
+  "stage": "res_add1",
+  "validator": "resadd",
+  "top_module": "ResAddFP32",
+  "token_start": 0,
+  "token_count": 1,
+  "cfg_seqlen": 0,
+  "input_beats": 64,
+  "output_beats": 64
+}
