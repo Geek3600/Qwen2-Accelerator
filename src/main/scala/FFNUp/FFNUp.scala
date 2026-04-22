@@ -1,7 +1,7 @@
 package FFNUp
 
 import FFNUp._
-import QuantCommon.{Fp32Add, Fp32Mul, Fp32ToSInt, Int32ToFp32, Int8ToFp32}
+import QuantCommon.{Fp32Add, Fp32Mul, Fp32ToSInt, Int32ToFp32, Int8ToFp32, XilinxFpTargetConfig}
 import QuantCommon.Precision._
 import chisel3._
 import chisel3.util._
@@ -29,6 +29,11 @@ class FFNUp extends Module {
     val weight_init_mode = Input(Bool())
     val weight_init_data = Input(UInt(WMEM_WIDTH.W))
     val weight_init_addr = Output(UInt(log2Up(WMEM_DEPTH).W))
+    val weight_active_bank = Input(Bool())
+    val weight_preload_bank = Input(Bool())
+    val weight_preload_valid = Input(Bool())
+    val weight_preload_addr = Input(UInt(log2Up(WMEM_DEPTH).W))
+    val weight_preload_data = Input(UInt(WMEM_WIDTH.W))
     val bias_init_data = Input(UInt(MEM_WIDTH.W))
     val bias_init_valid = Input(Bool())
     val out_inv_scale = Input(UInt(FP32_WIDTH.W))
@@ -56,7 +61,7 @@ class FFNUp extends Module {
   val cu_inst = Module(new CUQuant)
   val su_inst = Module(new StoreUnit)
   val lw_inst = Module(new LoadWeight)
-  val bias_mem = RegInit(VecInit(Seq.fill(COL_W / ROW)(0.U(MEM_WIDTH.W))))
+  val bias_mem = Reg(Vec(COL_W / ROW, UInt(MEM_WIDTH.W)))
   val bias_init_cnt = RegInit(0.U(log2Up(COL_W / ROW).W))
 
   when(io.bias_init_valid) {
@@ -78,10 +83,12 @@ class FFNUp extends Module {
   lu_inst.io.cfg_prefill := io.cfg_prefill
   lu_inst.io.cfg_seqlen := io.cfg_seqlen
   lu_inst.io.cfg_valid := io.cfg_valid
+  lu_inst.io.weight_ready := lw_inst.io.weight_ready
 
   cu_inst.io.data_in := lu_inst.io.data_out
   cu_inst.io.data_in_valid := lu_inst.io.data_out_valid
   cu_inst.io.w_data := lw_inst.io.data_out
+  cu_inst.io.w_data_sel := lw_inst.io.data_out_sel
   cu_inst.io.w_valid := lw_inst.io.data_out_valid
   cu_inst.io.cfg_prefill := io.cfg_prefill
   cu_inst.io.cfg_seqlen := io.cfg_seqlen
@@ -97,9 +104,21 @@ class FFNUp extends Module {
   lw_inst.io.st := io.layer_st
   lw_inst.io.init_mode := io.weight_init_mode
   lw_inst.io.init_data := io.weight_init_data
+  lw_inst.io.active_bank := io.weight_active_bank
+  lw_inst.io.preload_valid := io.weight_preload_valid
+  lw_inst.io.preload_bank := io.weight_preload_bank
+  lw_inst.io.preload_addr := io.weight_preload_addr
+  lw_inst.io.preload_data := io.weight_preload_data
 
   io.data_ready := mem_inst.io.w_ready
   io.weight_init_addr := lw_inst.io.init_addr
+
+  val epilogueLatency =
+    XilinxFpTargetConfig.FixedToFloatLatency +
+      XilinxFpTargetConfig.MulLatency +
+      XilinxFpTargetConfig.AddLatency +
+      XilinxFpTargetConfig.FloatToFixedLatency
+  val epilogueFire = su_inst.io.data_out_valid
 
   val su_vec = su_inst.io.data_out.asTypeOf(Vec(ROW, SInt(INT32_WIDTH.W)))
   val bias_vec = bias_mem(su_inst.io.data_out_addr(log2Up(COL_W / ROW) - 1, 0)).asTypeOf(Vec(ROW, SInt(DATAW.W)))
@@ -112,12 +131,12 @@ class FFNUp extends Module {
     val add = Module(new Fp32Add)
     val toInt = Module(new Fp32ToSInt(INT32_WIDTH))
 
-    accToFp.io.in := su_vec(i)
+    accToFp.io.in := Mux(epilogueFire, su_vec(i), 0.S(INT32_WIDTH.W))
     accMul.io.a := accToFp.io.out
-    accMul.io.b := io.out_inv_scale
-    biasToFp.io.in := bias_vec(i)
+    accMul.io.b := Mux(epilogueFire, io.out_inv_scale, 0.U(FP32_WIDTH.W))
+    biasToFp.io.in := Mux(epilogueFire, bias_vec(i), 0.S(DATAW.W))
     biasMul.io.a := biasToFp.io.out
-    biasMul.io.b := io.bias_scale
+    biasMul.io.b := Mux(epilogueFire, io.bias_scale, 0.U(FP32_WIDTH.W))
     add.io.a := accMul.io.out
     add.io.b := biasMul.io.out
     toInt.io.in := add.io.out
@@ -129,14 +148,29 @@ class FFNUp extends Module {
     relu_vec(i) := Mux(sat < 0.S, 0.U, sat.asUInt)
   }
 
+  val dataOutValidPipe = RegInit(VecInit(Seq.fill(epilogueLatency)(false.B)))
+  val dataOutStPipe = Reg(Vec(epilogueLatency, Bool()))
+  val dataOutLastPipe = Reg(Vec(epilogueLatency, Bool()))
+  val dataOutAddrPipe = Reg(Vec(epilogueLatency, UInt(log2Up(MEM_DEPTH).W)))
+  dataOutValidPipe(0) := su_inst.io.data_out_valid
+  dataOutStPipe(0) := su_inst.io.data_out_st
+  dataOutLastPipe(0) := su_inst.io.data_out_last
+  dataOutAddrPipe(0) := su_inst.io.data_out_addr
+  for (i <- 1 until epilogueLatency) {
+    dataOutValidPipe(i) := dataOutValidPipe(i - 1)
+    dataOutStPipe(i) := dataOutStPipe(i - 1)
+    dataOutLastPipe(i) := dataOutLastPipe(i - 1)
+    dataOutAddrPipe(i) := dataOutAddrPipe(i - 1)
+  }
+
   // ========================================
   // 输出信号
   // ========================================
   io.data_out := relu_vec.asUInt
-  io.data_out_valid := su_inst.io.data_out_valid
-  io.data_out_addr := su_inst.io.data_out_addr
-  io.data_out_st := su_inst.io.data_out_st
-  io.data_out_last := su_inst.io.data_out_last
+  io.data_out_valid := dataOutValidPipe.last
+  io.data_out_addr := dataOutAddrPipe.last
+  io.data_out_st := dataOutStPipe.last
+  io.data_out_last := dataOutLastPipe.last
 }
 
 object FFNUpGen extends App {

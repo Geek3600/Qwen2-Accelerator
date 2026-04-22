@@ -1,0 +1,13 @@
+{
+  "alias": "input",
+  "kind": "tensor",
+  "shape": [
+    12,
+    16,
+    16
+  ],
+  "dtype": "float32",
+  "num_values": 3072,
+  "source_file": "weight/pyjm_layer/pyjm_layer/softmax.json",
+  "binary_file": "artifacts/softmax.input.float32.bin"
+}

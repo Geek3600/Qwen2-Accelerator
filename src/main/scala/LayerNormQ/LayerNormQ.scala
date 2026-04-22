@@ -35,26 +35,40 @@ class Fp32LaneSum extends Module {
   add1011.io.a := inVec(10)
   add1011.io.b := inVec(11)
 
+  val add01Reg = RegNext(add01.io.out, 0.U(FP32_WIDTH.W))
+  val add23Reg = RegNext(add23.io.out, 0.U(FP32_WIDTH.W))
+  val add45Reg = RegNext(add45.io.out, 0.U(FP32_WIDTH.W))
+  val add67Reg = RegNext(add67.io.out, 0.U(FP32_WIDTH.W))
+  val add89Reg = RegNext(add89.io.out, 0.U(FP32_WIDTH.W))
+  val add1011Reg = RegNext(add1011.io.out, 0.U(FP32_WIDTH.W))
+
   val add0123 = Module(new Fp32Add)
   val add4567 = Module(new Fp32Add)
   val add891011 = Module(new Fp32Add)
 
-  add0123.io.a := add01.io.out
-  add0123.io.b := add23.io.out
-  add4567.io.a := add45.io.out
-  add4567.io.b := add67.io.out
-  add891011.io.a := add89.io.out
-  add891011.io.b := add1011.io.out
+  add0123.io.a := add01Reg
+  add0123.io.b := add23Reg
+  add4567.io.a := add45Reg
+  add4567.io.b := add67Reg
+  add891011.io.a := add89Reg
+  add891011.io.b := add1011Reg
+
+  val add0123Reg = RegNext(add0123.io.out, 0.U(FP32_WIDTH.W))
+  val add4567Reg = RegNext(add4567.io.out, 0.U(FP32_WIDTH.W))
+  val add891011Reg = RegNext(add891011.io.out, 0.U(FP32_WIDTH.W))
 
   val add0to7 = Module(new Fp32Add)
+  add0to7.io.a := add0123Reg
+  add0to7.io.b := add4567Reg
+
+  val add0to7Reg = RegNext(add0to7.io.out, 0.U(FP32_WIDTH.W))
+  val add891011Pipe = RegNext(add891011Reg, 0.U(FP32_WIDTH.W))
+
   val addAll = Module(new Fp32Add)
+  addAll.io.a := add0to7Reg
+  addAll.io.b := add891011Pipe
 
-  add0to7.io.a := add0123.io.out
-  add0to7.io.b := add4567.io.out
-  addAll.io.a := add0to7.io.out
-  addAll.io.b := add891011.io.out
-
-  io.out := addAll.io.out
+  io.out := RegNext(addAll.io.out, 0.U(FP32_WIDTH.W))
 }
 
 class Fp32LaneSquareSum extends Module {
@@ -119,6 +133,16 @@ class Fp32LayerNormApply extends Module {
 class LayerNormQ extends Module {
   private def fp32Const(value: Float): UInt =
     java.lang.Float.floatToRawIntBits(value).U(FP32_WIDTH.W)
+  private val applyLatency =
+    XilinxFpTargetConfig.AddLatency +
+      XilinxFpTargetConfig.MulLatency +
+      XilinxFpTargetConfig.MulLatency +
+      XilinxFpTargetConfig.AddLatency
+  private val quantLatency =
+    XilinxFpTargetConfig.MulLatency +
+      XilinxFpTargetConfig.AddLatency +
+      XilinxFpTargetConfig.FloatToFixedLatency
+  private val outPipelineLatency = applyLatency + quantLatency
 
   val io = IO(new Bundle() {
     val data_in_st = Input(Bool())
@@ -195,11 +219,55 @@ class LayerNormQ extends Module {
   val statValid = RegNext(statReadEn, false.B)
   val statFirst = RegNext(state === statRead && vecIdx === 0.U, false.B)
   val statLast = RegNext(state === statRead && vecIdx === (VECTOR_BEATS - 1).U, false.B)
+  val statDataSafe = Mux(statValid, statData, 0.U(FP_PACK_WIDTH.W))
+  val statDataReg = RegInit(0.U(FP_PACK_WIDTH.W))
+  val laneAccumValidReg = RegInit(false.B)
+  val laneAccumFirstReg = RegInit(false.B)
+  val laneAccumLastReg = RegInit(false.B)
+
+  statDataReg := statDataSafe
 
   val laneSum = Module(new Fp32LaneSum)
-  laneSum.io.in := statData
+  laneSum.io.in := statDataReg
   val laneSqSum = Module(new Fp32LaneSquareSum)
-  laneSqSum.io.in := statData
+  laneSqSum.io.in := statDataReg
+
+  val laneAccumValidPipe0 = RegInit(false.B)
+  val laneAccumValidPipe1 = RegInit(false.B)
+  val laneAccumValidPipe2 = RegInit(false.B)
+  val laneAccumValidPipe3 = RegInit(false.B)
+  val laneAccumValidPipe4 = RegInit(false.B)
+  val laneAccumFirstPipe0 = RegInit(false.B)
+  val laneAccumFirstPipe1 = RegInit(false.B)
+  val laneAccumFirstPipe2 = RegInit(false.B)
+  val laneAccumFirstPipe3 = RegInit(false.B)
+  val laneAccumFirstPipe4 = RegInit(false.B)
+  val laneAccumLastPipe0 = RegInit(false.B)
+  val laneAccumLastPipe1 = RegInit(false.B)
+  val laneAccumLastPipe2 = RegInit(false.B)
+  val laneAccumLastPipe3 = RegInit(false.B)
+  val laneAccumLastPipe4 = RegInit(false.B)
+
+  laneAccumValidPipe0 := statValid
+  laneAccumValidPipe1 := laneAccumValidPipe0
+  laneAccumValidPipe2 := laneAccumValidPipe1
+  laneAccumValidPipe3 := laneAccumValidPipe2
+  laneAccumValidPipe4 := laneAccumValidPipe3
+  laneAccumValidReg := laneAccumValidPipe4
+
+  laneAccumFirstPipe0 := statFirst
+  laneAccumFirstPipe1 := laneAccumFirstPipe0
+  laneAccumFirstPipe2 := laneAccumFirstPipe1
+  laneAccumFirstPipe3 := laneAccumFirstPipe2
+  laneAccumFirstPipe4 := laneAccumFirstPipe3
+  laneAccumFirstReg := laneAccumFirstPipe4
+
+  laneAccumLastPipe0 := statLast
+  laneAccumLastPipe1 := laneAccumLastPipe0
+  laneAccumLastPipe2 := laneAccumLastPipe1
+  laneAccumLastPipe3 := laneAccumLastPipe2
+  laneAccumLastPipe4 := laneAccumLastPipe3
+  laneAccumLastReg := laneAccumLastPipe4
 
   val sumAdd = Module(new Fp32Add)
   sumAdd.io.a := sumAcc
@@ -224,9 +292,9 @@ class LayerNormQ extends Module {
     }
   }
 
-  when(statValid) {
-    sumAcc := Mux(statFirst, laneSum.io.out, sumAdd.io.out)
-    sqSumAcc := Mux(statFirst, laneSqSum.io.out, sqAdd.io.out)
+  when(laneAccumValidReg) {
+    sumAcc := Mux(laneAccumFirstReg, laneSum.io.out, sumAdd.io.out)
+    sqSumAcc := Mux(laneAccumFirstReg, laneSqSum.io.out, sqAdd.io.out)
   }
 
   val meanMul = Module(new Fp32Mul)
@@ -263,7 +331,7 @@ class LayerNormQ extends Module {
 
   switch(state) {
     is(statDrain) {
-      when(statLast) {
+      when(laneAccumLastReg) {
         state := meanVar
       }
     }
@@ -300,15 +368,18 @@ class LayerNormQ extends Module {
   val outAddr = tokenIdx * VECTOR_BEATS.U + vecIdx
   val outReadEn = state === outRead
   val outData = inputMem.read(outAddr, outReadEn)
-  val outValid = RegNext(outReadEn, false.B)
-  val outFirst = RegNext(state === outRead && vecIdx === 0.U, false.B)
-  val outLast = RegNext(state === outRead && vecIdx === (VECTOR_BEATS - 1).U, false.B)
-  val outAddrReg = RegNext(outAddr)
+  val outValidRaw = RegNext(outReadEn, false.B)
+  val outFirstRaw = RegNext(state === outRead && vecIdx === 0.U, false.B)
+  val outLastRaw = RegNext(state === outRead && vecIdx === (VECTOR_BEATS - 1).U, false.B)
+  val outTokenLastRaw =
+    RegNext(state === outRead && vecIdx === (VECTOR_BEATS - 1).U && tokenIdx === (tokenCount - 1.U), false.B)
+  val outAddrRegRaw = RegNext(outAddr)
+  val outDataSafe = Mux(outValidRaw, outData, 0.U(FP_PACK_WIDTH.W))
   val gammaReg = RegEnable(gammaVec(vecIdx), outReadEn)
   val betaReg = RegEnable(betaVec(vecIdx), outReadEn)
 
   val applyNorm = Module(new Fp32LayerNormApply)
-  applyNorm.io.in := outData
+  applyNorm.io.in := outDataSafe
   applyNorm.io.mean := meanReg
   applyNorm.io.invStd := invStdReg
   applyNorm.io.gamma := gammaReg
@@ -319,6 +390,25 @@ class LayerNormQ extends Module {
   quant.io.invScale := io.out_inv_scale
   quant.io.zeroPoint := io.out_zero_point
 
+  val outValidPipe = RegInit(VecInit(Seq.fill(outPipelineLatency)(false.B)))
+  val outFirstPipe = RegInit(VecInit(Seq.fill(outPipelineLatency)(false.B)))
+  val outLastPipe = RegInit(VecInit(Seq.fill(outPipelineLatency)(false.B)))
+  val outTokenLastPipe = RegInit(VecInit(Seq.fill(outPipelineLatency)(false.B)))
+  val outAddrPipe = RegInit(VecInit(Seq.fill(outPipelineLatency)(0.U(log2Up(MEM_DEPTH).W))))
+
+  outValidPipe(0) := outValidRaw
+  outFirstPipe(0) := outFirstRaw
+  outLastPipe(0) := outLastRaw
+  outTokenLastPipe(0) := outTokenLastRaw
+  outAddrPipe(0) := outAddrRegRaw
+  for (i <- 1 until outPipelineLatency) {
+    outValidPipe(i) := outValidPipe(i - 1)
+    outFirstPipe(i) := outFirstPipe(i - 1)
+    outLastPipe(i) := outLastPipe(i - 1)
+    outTokenLastPipe(i) := outTokenLastPipe(i - 1)
+    outAddrPipe(i) := outAddrPipe(i - 1)
+  }
+
   when(state === outRead) {
     when(vecIdx === (VECTOR_BEATS - 1).U) {
       state := outDrain
@@ -327,7 +417,7 @@ class LayerNormQ extends Module {
     }
   }
 
-  when(state === outDrain && outLast) {
+  when(state === outDrain && outLastRaw) {
     when(tokenIdx === tokenCount - 1.U) {
       inputLoaded := false.B
       state := idle
@@ -342,10 +432,10 @@ class LayerNormQ extends Module {
 
   io.data_ready := state === idle
   io.res := quant.io.out
-  io.res_valid := outValid
-  io.res_st := outValid && outFirst
-  io.res_last := outValid && outLast && tokenIdx === (tokenCount - 1.U)
-  io.res_addr := outAddrReg
+  io.res_valid := outValidPipe.last
+  io.res_st := outValidPipe.last && outFirstPipe.last
+  io.res_last := outValidPipe.last && outLastPipe.last && outTokenLastPipe.last
+  io.res_addr := outAddrPipe.last
 }
 
 object LayerNormQGen extends App {

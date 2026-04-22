@@ -10,14 +10,15 @@ import chisel3.util._
 // LSU的作用：负责生成地址，从DataMem读取数据，并输出
 // 本质上是一个LoadU
 class LSU extends Module {
+  private val LocalDepth = LOCAL_PRELEN * DATAOUTNUM / DATAINNUM
   val io = IO(new Bundle() {
-    val cfg_seqlen = Input(UInt(log2Up(MAX_PRELEN).W))
+    val cfg_seqlen = Input(UInt(log2Up(LOCAL_PRELEN).W))
     val cfg_prefill = Input(Bool())
     val cfg_valid = Input(Bool())
     val cfg_single_query = Input(Bool())
 
     val data_in = Input(UInt((DATAINW).W))
-    val data_in_addr = Output(UInt(log2Up(BATCHSIZE * DATAOUTNUM/DATAINNUM).W))
+    val data_in_addr = Output(UInt(log2Up(LocalDepth).W))
     val data_in_last = Output(Bool())
     val data_in_en = Output(Bool())
     val data_in_ready = Input(Bool())
@@ -31,8 +32,8 @@ class LSU extends Module {
     val data_out_addr = Output(UInt(log2Up(BATCHSIZE).W))
   })
 
-  val prefill = RegEnable(io.cfg_prefill,io.cfg_valid)
-  val singleQuery = RegEnable(io.cfg_single_query, false.B, io.cfg_valid)
+  val prefill = false.B
+  val singleQuery = true.B
   val seqlen = RegEnable(io.cfg_seqlen,io.cfg_valid)
 
   // 状态机：
@@ -62,7 +63,7 @@ class LSU extends Module {
     }
 
     // prefill阶段外层循环
-    val prefill_cnt = RegInit(0.U(log2Up(MAX_PRELEN).W))
+  val prefill_cnt = RegInit(0.U(log2Up(LOCAL_PRELEN).W))
     val prefill_last = prefill_cnt === seqlen
     when(read_step && v_last && prefill) {
       prefill_cnt := Mux(prefill_last, 0.U, prefill_cnt + 1.U)
@@ -70,7 +71,9 @@ class LSU extends Module {
 
     //decode阶段的外层循环
     val batch_cnt = RegInit(0.U(log2Up(BATCHSIZE).W))
-    val batch_last = batch_cnt === Mux(singleQuery, 0.U(batch_cnt.getWidth.W), (BATCHSIZE -1 ).U(batch_cnt.getWidth.W))
+    // single_query decode: 需要输出 SINGLE_QUERY_BATCH=12 个 head 的 V
+    // 旧逻辑 singleQuery ? 0 : BATCHSIZE-1 错误，只输出1个 head 就认为完成了
+    val batch_last = batch_cnt === Mux(singleQuery, (SINGLE_QUERY_BATCH - 1).U(batch_cnt.getWidth.W), (BATCHSIZE -1 ).U(batch_cnt.getWidth.W))
     when(read_step && v_last && !prefill) {
       batch_cnt := Mux(batch_last, 0.U, batch_cnt + 1.U)
     }

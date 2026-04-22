@@ -2,6 +2,7 @@ package ResAdd
 
 import QuantCommon.Fp32VecAdd
 import QuantCommon.Precision._
+import QuantCommon.XilinxFpTargetConfig
 import ResAdd.FP32Param._
 import chisel3._
 import chisel3.util._
@@ -53,7 +54,8 @@ class ResAddFP32 extends Module {
   val is_reading = state === reading
 
   val fire = io.dm2_in_valid && io.res_ready
-  val active = (is_reading || (is_idle && mem.io.r_ready)) && fire
+  // Never advance into the adder unless an origin buffer is actually readable.
+  val active = mem.io.r_ready && fire
 
   switch(state) {
     is(idle) {
@@ -76,23 +78,47 @@ class ResAddFP32 extends Module {
   mem.io.r_en := active
   mem.io.r_last := active && io.dm2_in_last
 
-  val dm2_data_r = RegEnable(io.dm2_in, 0.U(DATA_WIDTH.W), active)
+  val dm2_data_r = Reg(UInt(DATA_WIDTH.W))
+  when(active) {
+    dm2_data_r := io.dm2_in
+  }
   val dm2_valid_r = RegNext(active, false.B)
-  val dm2_st_r = RegEnable(io.dm2_in_st, false.B, active)
-  val dm2_last_r = RegEnable(io.dm2_in_last, false.B, active)
-  val dm2_addr_r = RegEnable(io.dm2_in_addr, 0.U(log2Up(MEM_DEPTH).W), active)
+  val dm2_st_r = Reg(Bool())
+  val dm2_last_r = Reg(Bool())
+  val dm2_addr_r = Reg(UInt(log2Up(MEM_DEPTH).W))
+  when(active) {
+    dm2_st_r := io.dm2_in_st
+    dm2_last_r := io.dm2_in_last
+    dm2_addr_r := io.dm2_in_addr
+  }
 
   val add = Module(new Fp32VecAdd)
-  add.io.a := mem.io.r_data
-  add.io.b := dm2_data_r
+  add.io.a := Mux(dm2_valid_r, mem.io.r_data, 0.U(DATA_WIDTH.W))
+  add.io.b := Mux(dm2_valid_r, dm2_data_r, 0.U(DATA_WIDTH.W))
+
+  val resValidPipe = RegInit(VecInit(Seq.fill(XilinxFpTargetConfig.AddLatency)(false.B)))
+  val resStPipe = Reg(Vec(XilinxFpTargetConfig.AddLatency, Bool()))
+  val resLastPipe = Reg(Vec(XilinxFpTargetConfig.AddLatency, Bool()))
+  val resAddrPipe = Reg(Vec(XilinxFpTargetConfig.AddLatency, UInt(log2Up(MEM_DEPTH).W)))
+
+  resValidPipe(0) := dm2_valid_r
+  resStPipe(0) := dm2_st_r
+  resLastPipe(0) := dm2_last_r
+  resAddrPipe(0) := dm2_addr_r
+  for (i <- 1 until XilinxFpTargetConfig.AddLatency) {
+    resValidPipe(i) := resValidPipe(i - 1)
+    resStPipe(i) := resStPipe(i - 1)
+    resLastPipe(i) := resLastPipe(i - 1)
+    resAddrPipe(i) := resAddrPipe(i - 1)
+  }
 
   io.res := add.io.out
-  io.res_valid := dm2_valid_r
-  io.res_st := dm2_st_r
-  io.res_last := dm2_last_r
-  io.res_addr := dm2_addr_r
+  io.res_valid := resValidPipe.last
+  io.res_st := resStPipe.last
+  io.res_last := resLastPipe.last
+  io.res_addr := resAddrPipe.last
 
-  io.dm2_ready := (is_reading || (is_idle && mem.io.r_ready)) && io.res_ready
+  io.dm2_ready := mem.io.r_ready && io.res_ready
 }
 
 object ResAddFP32Gen extends App {

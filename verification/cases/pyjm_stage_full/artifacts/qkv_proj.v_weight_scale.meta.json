@@ -1,0 +1,6 @@
+{
+  "alias": "v_weight_scale",
+  "kind": "scalar",
+  "value": 0.0005483627319335938,
+  "source_file": "weight/pyjm_layer/pyjm_layer/v.json"
+}

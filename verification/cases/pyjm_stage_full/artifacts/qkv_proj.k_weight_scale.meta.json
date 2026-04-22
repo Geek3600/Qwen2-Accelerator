@@ -1,0 +1,6 @@
+{
+  "alias": "k_weight_scale",
+  "kind": "scalar",
+  "value": 0.00046944618225097656,
+  "source_file": "weight/pyjm_layer/pyjm_layer/k.json"
+}

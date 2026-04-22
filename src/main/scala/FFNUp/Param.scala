@@ -2,11 +2,11 @@ package FFNUp
 
 object Param {
   val DATAW = 8
-  val BATCHSIZE = 32
+  val BATCHSIZE = 16
 
   // Prefill/Decode 模式参数
-  val MAX_PREFILL = 8   // Prefill 模式最大 token 数
-  val MAX_SEQLEN = 26   // 最大序列长度
+  val MAX_SEQLEN = 16   // 最大序列长度
+  val MAX_PREFILL = MAX_SEQLEN   // Prefill 模式最大 token 数
 
   // 计算阵列参数
   val ROW = 12          // 每周期处理 12 个输入元素

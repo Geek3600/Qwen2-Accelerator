@@ -238,6 +238,13 @@ module NinePSystemTop(
   wire [10:0] core_res_addr;
   wire core_res_valid;
   wire core_res_last;
+  wire [47:0] core_attn_tap_data_unused;
+  wire [3:0] core_attn_tap_head_unused;
+  wire [31:0] core_attn_tap_addr_unused;
+  wire core_attn_tap_valid_unused;
+  wire core_attn_tap_last_unused;
+  wire core_attn_dm1_override_ready_unused;
+  wire core_attn_dm2_v_override_ready_unused;
 
   wire [31:0] core_data_in_addr_abs = input_token_base + core_data_in_addr;
   wire [383:0] core_data_in =
@@ -273,6 +280,8 @@ module NinePSystemTop(
     .io_attn_cfg_valid(core_attn_cfg_valid),
     .io_attn_cfg_single_query(core_attn_cfg_single_query),
     .io_weight_init_mode(core_weight_init_mode),
+    .io_weight_active_bank(1'b0),
+    .io_weight_preload_bank(1'b0),
     .io_data_in(core_data_in),
     .io_data_in_ready(core_data_in_ready),
     .io_data_in_addr(core_data_in_addr),
@@ -298,24 +307,52 @@ module NinePSystemTop(
     .io_ffndown_out_scale(io_ffndown_out_scale),
     .io_qkv_w_in(core_qkv_w_in),
     .io_qkv_w_addr(core_qkv_w_addr),
+    .io_qkv_w_preload_valid(1'b0),
+    .io_qkv_w_preload_addr(16'd0),
+    .io_qkv_w_preload_data(288'd0),
     .io_qkv_b_in(core_qkv_b_in),
     .io_qkv_b_valid(core_qkv_b_valid),
     .io_sm_w_in(core_sm_w_in),
     .io_sm_w_addr(core_sm_w_addr),
     .io_out_w_in(core_out_w_in),
     .io_out_w_addr(core_out_w_addr),
+    .io_out_w_preload_valid(1'b0),
+    .io_out_w_preload_addr(15'd0),
+    .io_out_w_preload_data(288'd0),
     .io_out_b_in(core_out_b_in),
     .io_out_b_valid(core_out_b_valid),
     .io_ln2_w_in(core_ln2_w_in),
     .io_ln2_w_valid(core_ln2_w_valid),
     .io_ffnup_w_in(core_ffnup_w_in),
     .io_ffnup_w_addr(core_ffnup_w_addr),
+    .io_ffnup_w_preload_valid(1'b0),
+    .io_ffnup_w_preload_addr(17'd0),
+    .io_ffnup_w_preload_data(288'd0),
     .io_ffnup_b_in(core_ffnup_b_in),
     .io_ffnup_b_valid(core_ffnup_b_valid),
     .io_ffndown_w_in(core_ffndown_w_in),
     .io_ffndown_w_addr(core_ffndown_w_addr),
+    .io_ffndown_w_preload_valid(1'b0),
+    .io_ffndown_w_preload_addr(17'd0),
+    .io_ffndown_w_preload_data(288'd0),
     .io_ffndown_b_in(core_ffndown_b_in),
     .io_ffndown_b_valid(core_ffndown_b_valid),
+    .io_attn_tap_data(core_attn_tap_data_unused),
+    .io_attn_tap_head(core_attn_tap_head_unused),
+    .io_attn_tap_addr(core_attn_tap_addr_unused),
+    .io_attn_tap_valid(core_attn_tap_valid_unused),
+    .io_attn_tap_last(core_attn_tap_last_unused),
+    .io_attn_dm1_override_enable(1'b0),
+    .io_attn_dm1_override_data('0),
+    .io_attn_dm1_override_st(1'b0),
+    .io_attn_dm1_override_addr('0),
+    .io_attn_dm1_override_valid(1'b0),
+    .io_attn_dm1_override_last(1'b0),
+    .io_attn_dm1_override_ready(core_attn_dm1_override_ready_unused),
+    .io_attn_dm2_v_override_enable(1'b0),
+    .io_attn_dm2_v_override_data('0),
+    .io_attn_dm2_v_override_valid(1'b0),
+    .io_attn_dm2_v_override_ready(core_attn_dm2_v_override_ready_unused),
     .io_res(core_res),
     .io_res_st(core_res_st),
     .io_res_addr(core_res_addr),

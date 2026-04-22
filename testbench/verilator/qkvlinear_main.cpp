@@ -4,7 +4,170 @@
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
+#include <sstream>
 #include <vector>
+
+namespace {
+
+int env_limit(const char* name, int default_value) {
+  if (const char* value = std::getenv(name)) {
+    return std::max(0, std::atoi(value));
+  }
+  return default_value;
+}
+
+bool is_probe_collect_addr(uint32_t addr) {
+  switch (addr) {
+    case 0:
+    case 1:
+    case 2:
+    case 64:
+    case 65:
+    case 66:
+    case 128:
+    case 129:
+    case 130:
+    case 189:
+    case 190:
+    case 191:
+      return true;
+    default:
+      return false;
+  }
+}
+
+std::string format_int8_lane_list(const uint32_t* words, std::size_t lanes) {
+  const auto values = unpack_int8_lanes(words, lanes);
+  std::ostringstream oss;
+  oss << "[";
+  for (std::size_t idx = 0; idx < values.size(); ++idx) {
+    if (idx != 0) {
+      oss << ",";
+    }
+    oss << values[idx];
+  }
+  oss << "]";
+  return oss.str();
+}
+
+std::string format_qkv_output_lanes(const uint32_t* words) {
+  const auto lanes = unpack_int8_lanes(words, 6);
+  std::ostringstream oss;
+  oss << "q=[" << lanes[0] << "," << lanes[1] << "]"
+      << " k=[" << lanes[2] << "," << lanes[3] << "]"
+      << " v=[" << lanes[4] << "," << lanes[5] << "]";
+  return oss.str();
+}
+
+std::string format_weight36(const uint32_t* words9) {
+  const auto lanes = unpack_int8_lanes(words9, 36);
+  std::ostringstream oss;
+  oss << "[";
+  for (std::size_t idx = 0; idx < lanes.size(); ++idx) {
+    if (idx != 0) {
+      oss << ",";
+    }
+    oss << lanes[idx];
+  }
+  oss << "]";
+  return oss.str();
+}
+
+int find_weight_tile_index(const PackedWords& weight_init, const uint32_t* words9) {
+  for (std::size_t idx = 0; idx < weight_init.beats(); ++idx) {
+    const auto* beat = weight_init.beat(idx);
+    bool same = true;
+    for (std::size_t word = 0; word < 9; ++word) {
+      if (beat[word] != words9[word]) {
+        same = false;
+        break;
+      }
+    }
+    if (same) {
+      return static_cast<int>(idx);
+    }
+  }
+  return -1;
+}
+
+const uint32_t* vec_words(const VQKVLinear___024root* root, int idx) {
+  switch (idx) {
+    case 0: return root->QKVLinear__DOT__vec_buffer_0_0;
+    case 1: return root->QKVLinear__DOT__vec_buffer_0_1;
+    case 2: return root->QKVLinear__DOT__vec_buffer_0_2;
+    case 64: return root->QKVLinear__DOT__vec_buffer_0_64;
+    case 65: return root->QKVLinear__DOT__vec_buffer_0_65;
+    case 66: return root->QKVLinear__DOT__vec_buffer_0_66;
+    case 128: return root->QKVLinear__DOT__vec_buffer_0_128;
+    case 129: return root->QKVLinear__DOT__vec_buffer_0_129;
+    case 130: return root->QKVLinear__DOT__vec_buffer_0_130;
+    case 189: return root->QKVLinear__DOT__vec_buffer_0_189;
+    case 190: return root->QKVLinear__DOT__vec_buffer_0_190;
+    case 191: return root->QKVLinear__DOT__vec_buffer_0_191;
+    default: return nullptr;
+  }
+}
+
+std::string format_vec_samples(const VQKVLinear___024root* root) {
+  static const int kProbeIdx[] = {0, 1, 2, 64, 65, 66, 128, 129, 130, 189, 190, 191};
+  std::ostringstream oss;
+  for (std::size_t idx = 0; idx < std::size(kProbeIdx); ++idx) {
+    const int vec_idx = kProbeIdx[idx];
+    const auto* words = vec_words(root, vec_idx);
+    if (words == nullptr) {
+      continue;
+    }
+    if (idx != 0) {
+      oss << " ";
+    }
+    oss << "v" << vec_idx << "=" << hex_words(words, 3)
+        << format_int8_lane_list(words, 12);
+  }
+  return oss.str();
+}
+
+const uint32_t* expected_vec_words(
+    int idx,
+    const PackedWords* q_rows,
+    const PackedWords* k_rows,
+    const PackedWords* v_rows) {
+  if (idx < 64) {
+    return (q_rows != nullptr && static_cast<std::size_t>(idx) < q_rows->beats()) ? q_rows->beat(idx) : nullptr;
+  }
+  if (idx < 128) {
+    const int beat = idx - 64;
+    return (k_rows != nullptr && static_cast<std::size_t>(beat) < k_rows->beats()) ? k_rows->beat(beat) : nullptr;
+  }
+  const int beat = idx - 128;
+  return (v_rows != nullptr && static_cast<std::size_t>(beat) < v_rows->beats()) ? v_rows->beat(beat) : nullptr;
+}
+
+std::string format_vec_samples_compare(
+    const VQKVLinear___024root* root,
+    const PackedWords* q_rows,
+    const PackedWords* k_rows,
+    const PackedWords* v_rows) {
+  static const int kProbeIdx[] = {0, 1, 2, 64, 65, 66, 128, 129, 130, 189, 190, 191};
+  std::ostringstream oss;
+  for (std::size_t idx = 0; idx < std::size(kProbeIdx); ++idx) {
+    const int vec_idx = kProbeIdx[idx];
+    const auto* obs = vec_words(root, vec_idx);
+    if (obs == nullptr) {
+      continue;
+    }
+    const auto* exp = expected_vec_words(vec_idx, q_rows, k_rows, v_rows);
+    if (idx != 0) {
+      oss << " ";
+    }
+    oss << "v" << vec_idx << "=" << hex_words(obs, 3);
+    if (exp != nullptr) {
+      oss << "/exp=" << hex_words(exp, 3);
+    }
+  }
+  return oss.str();
+}
+
+}  // namespace
 
 int main(int argc, char** argv) {
   try {
@@ -16,15 +179,41 @@ int main(int argc, char** argv) {
     const auto weight_init = read_words(window_dir / "artifacts" / "weight_init.u32.bin", 9);
     const auto bias_init = read_words(window_dir / "artifacts" / "bias_init.u32.bin", 3);
     const auto golden = read_words(window_dir / "artifacts" / "golden.u32.bin", 2);
+    const auto q_rows_path = window_dir / "artifacts" / "q_output_rows.u32.bin";
+    const auto k_rows_path = window_dir / "artifacts" / "k_output_rows.u32.bin";
+    const auto v_rows_path = window_dir / "artifacts" / "v_output_rows.u32.bin";
     const auto v_chunk0_path = window_dir / "artifacts" / "v_chunk0.u32.bin";
     const bool has_v_chunk0 = std::filesystem::exists(v_chunk0_path);
+    const bool has_q_rows = std::filesystem::exists(q_rows_path);
+    const bool has_k_rows = std::filesystem::exists(k_rows_path);
+    const bool has_v_rows = std::filesystem::exists(v_rows_path);
     PackedWords v_chunk0;
+    PackedWords q_rows;
+    PackedWords k_rows;
+    PackedWords v_rows;
     if (has_v_chunk0) {
       v_chunk0 = read_words(v_chunk0_path, 3);
     }
+    if (has_q_rows) {
+      q_rows = read_words(q_rows_path, 3);
+    }
+    if (has_k_rows) {
+      k_rows = read_words(k_rows_path, 3);
+    }
+    if (has_v_rows) {
+      v_rows = read_words(v_rows_path, 3);
+    }
     const bool debug = std::getenv("QKV_DEBUG") != nullptr;
-    int debug_input_left = 8;
-    int debug_output_left = 8;
+    const bool debug_full = std::getenv("QKV_DEBUG_FULL") != nullptr;
+    int debug_input_left = env_limit("QKV_DEBUG_INPUT_LIMIT", debug_full ? 16 : 8);
+    int debug_output_left = env_limit("QKV_DEBUG_OUTPUT_LIMIT", debug_full ? 32 : 12);
+    int debug_state_left = env_limit("QKV_DEBUG_STATE_LIMIT", debug_full ? 64 : 24);
+    int debug_collect_left = env_limit("QKV_DEBUG_COLLECT_LIMIT", debug_full ? 128 : 40);
+    int debug_su_left = env_limit("QKV_DEBUG_SU_LIMIT", debug_full ? 128 : 32);
+    int debug_weight_left = env_limit("QKV_DEBUG_WEIGHT_LIMIT", debug_full ? 24 : 8);
+    int debug_psum_left = env_limit("QKV_DEBUG_PSUM_LIMIT", debug_full ? 24 : 8);
+    int debug_mac_left = env_limit("QKV_DEBUG_MAC_LIMIT", debug_full ? 16 : 4);
+    uint8_t prev_state = 0xff;
 
     VQKVLinear dut;
     dut.io_data_in_st = 0;
@@ -146,8 +335,34 @@ int main(int argc, char** argv) {
 
     for (int cycle = 0; cycle < 200000 && seen_beats < golden.beats(); ++cycle) {
       tick(dut);
+      if (debug && debug_state_left > 0 &&
+          static_cast<uint8_t>(dut.rootp->QKVLinear__DOT__state) != prev_state) {
+        std::cerr << "QKV state cycle=" << cycle
+                  << " prev=" << static_cast<int>(prev_state)
+                  << " now=" << static_cast<int>(dut.rootp->QKVLinear__DOT__state)
+                  << " head=" << static_cast<int>(dut.rootp->QKVLinear__DOT__head_cnt_r)
+                  << " outCnt=" << static_cast<int>(dut.rootp->QKVLinear__DOT__output_cnt_r)
+                  << " batch=" << static_cast<int>(dut.rootp->QKVLinear__DOT__batch_cnt_r)
+                  << " prefill=" << static_cast<int>(dut.rootp->QKVLinear__DOT__prefill_cnt_r)
+                  << " allDone=" << static_cast<int>(dut.rootp->QKVLinear__DOT__all_output_done)
+                  << " tokenLast=" << static_cast<int>(dut.rootp->QKVLinear__DOT__token_last)
+                  << " collectW=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collectWriteEnableReg)
+                  << " collectTok=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collectTokenReg)
+                  << " collectVec=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collectVecReg)
+                  << " collectData=" << hex_words(dut.rootp->QKVLinear__DOT__collectDataReg, 3)
+                  << " lanes=" << format_int8_lane_list(dut.rootp->QKVLinear__DOT__collectDataReg, 12)
+                  << " samples={" << format_vec_samples_compare(
+                         dut.rootp,
+                         has_q_rows ? &q_rows : nullptr,
+                         has_k_rows ? &k_rows : nullptr,
+                         has_v_rows ? &v_rows : nullptr) << "}"
+                  << std::endl;
+        prev_state = dut.rootp->QKVLinear__DOT__state;
+        --debug_state_left;
+      }
       if (debug && dut.rootp->QKVLinear__DOT__su_inst__DOT__io_data_out_valid_REG) {
         const uint32_t addr = dut.rootp->QKVLinear__DOT__su_inst__DOT__io_data_out_addr_REG;
+        const bool su_last = ((addr % 192U) == 191U);
         int probe_idx = -1;
         if (addr == 0) {
           probe_idx = 0;
@@ -159,6 +374,8 @@ int main(int argc, char** argv) {
         if (probe_idx >= 0 && !reported_qkv_internal[probe_idx]) {
           const auto* raw_words = &dut.rootp->QKVLinear__DOT__su_inst__DOT__io_data_out_REG[0];
           const auto* scaled_words = &dut.rootp->QKVLinear__DOT___epilogue_inst_io_out[0];
+          const uint32_t* w0_words = &dut.rootp->QKVLinear__DOT__cu_inst__DOT__w0_0[0];
+          const uint32_t* w1_words = &dut.rootp->QKVLinear__DOT__cu_inst__DOT__w1_0[0];
           const uint32_t* bias_words = nullptr;
           switch (addr) {
             case 0:
@@ -175,13 +392,114 @@ int main(int argc, char** argv) {
           }
           std::cerr << "QKV internal addr=" << addr
                     << " raw=" << hex_words(raw_words, 12)
-                    << " scaled=" << hex_words(scaled_words, 12);
+                    << " scaled=" << hex_words(scaled_words, 12)
+                    << " lw_sel=" << static_cast<int>(dut.rootp->QKVLinear__DOT__lw_inst__DOT__io_data_out_sel_REG)
+                    << " w0_idx=" << find_weight_tile_index(weight_init, w0_words)
+                    << " w1_idx=" << find_weight_tile_index(weight_init, w1_words);
           if (bias_words != nullptr) {
             std::cerr << " bias=" << hex_words(bias_words, 3);
           }
           std::cerr << std::endl;
           reported_qkv_internal[probe_idx] = true;
         }
+        if (debug_su_left > 0 &&
+            (debug_full || is_probe_collect_addr(addr) || su_last)) {
+          std::cerr << "QKV su cycle=" << cycle
+                    << " state=" << static_cast<int>(dut.rootp->QKVLinear__DOT__state)
+                    << " addr=" << addr
+                    << " last=" << static_cast<int>(su_last)
+                    << " collectFire=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collect_fire)
+                    << " collectW=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collectWriteEnableReg)
+                    << " collectTok=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collectTokenReg)
+                    << " collectVec=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collectVecReg)
+                    << " raw=" << hex_words(&dut.rootp->QKVLinear__DOT__su_inst__DOT__io_data_out_REG[0], 12)
+                    << " scaled=" << hex_words(&dut.rootp->QKVLinear__DOT___epilogue_inst_io_out[0], 12)
+                    << " collectData=" << hex_words(dut.rootp->QKVLinear__DOT__collectDataReg, 3)
+                    << " lanes=" << format_int8_lane_list(dut.rootp->QKVLinear__DOT__collectDataReg, 12)
+                    << std::endl;
+          --debug_su_left;
+        }
+      }
+      if (debug && debug_collect_left > 0 &&
+          (dut.rootp->QKVLinear__DOT__collectWriteEnableReg ||
+           (dut.rootp->QKVLinear__DOT__state == 2 && dut.rootp->QKVLinear__DOT__output_cnt_r == 0))) {
+        std::cerr << "QKV collect cycle=" << cycle
+                  << " state=" << static_cast<int>(dut.rootp->QKVLinear__DOT__state)
+                  << " head=" << static_cast<int>(dut.rootp->QKVLinear__DOT__head_cnt_r)
+                  << " outCnt=" << static_cast<int>(dut.rootp->QKVLinear__DOT__output_cnt_r)
+                  << " collectW=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collectWriteEnableReg)
+                  << " collectTok=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collectTokenReg)
+                  << " collectVec=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collectVecReg)
+                  << " collectData=" << hex_words(dut.rootp->QKVLinear__DOT__collectDataReg, 3)
+                  << " lanes=" << format_int8_lane_list(dut.rootp->QKVLinear__DOT__collectDataReg, 12)
+                  << " samples={" << format_vec_samples_compare(
+                         dut.rootp,
+                         has_q_rows ? &q_rows : nullptr,
+                         has_k_rows ? &k_rows : nullptr,
+                         has_v_rows ? &v_rows : nullptr) << "}"
+                  << std::endl;
+        --debug_collect_left;
+      }
+      if (debug && debug_weight_left > 0 &&
+          (dut.rootp->QKVLinear__DOT__lw_inst__DOT__io_data_out_valid_REG ||
+           dut.rootp->QKVLinear__DOT__cu_inst__DOT__io_data_out_valid_REG)) {
+        const uint32_t tile_idx =
+            static_cast<uint32_t>(dut.rootp->QKVLinear__DOT__su_inst__DOT__io_data_out_addr_REG) / 64U;
+        const uint32_t exp_idx0 = std::min<uint32_t>(tile_idx, static_cast<uint32_t>(weight_init.beats() - 1));
+        const uint32_t exp_idx1 = std::min<uint32_t>(tile_idx + 1U, static_cast<uint32_t>(weight_init.beats() - 1));
+        std::cerr << "QKV weight cycle=" << cycle
+                  << " lw_v=" << static_cast<int>(dut.rootp->QKVLinear__DOT__lw_inst__DOT__io_data_out_valid_REG)
+                  << " lw_sel=" << static_cast<int>(dut.rootp->QKVLinear__DOT__lw_inst__DOT__io_data_out_sel_REG)
+                  << " state=" << static_cast<int>(dut.rootp->QKVLinear__DOT__state)
+                  << " q_block=" << static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__block_cnt_r)
+                  << " w0_0=" << hex_words(dut.rootp->QKVLinear__DOT__cu_inst__DOT__w0_0, 9)
+                  << format_weight36(dut.rootp->QKVLinear__DOT__cu_inst__DOT__w0_0)
+                  << " w1_0=" << hex_words(dut.rootp->QKVLinear__DOT__cu_inst__DOT__w1_0, 9)
+                  << format_weight36(dut.rootp->QKVLinear__DOT__cu_inst__DOT__w1_0)
+                  << " expTile" << exp_idx0 << "=" << hex_words(weight_init.beat(exp_idx0), 9)
+                  << format_weight36(weight_init.beat(exp_idx0))
+                  << " expTile" << exp_idx1 << "=" << hex_words(weight_init.beat(exp_idx1), 9)
+                  << format_weight36(weight_init.beat(exp_idx1))
+                  << std::endl;
+        --debug_weight_left;
+      }
+      if (debug && debug_psum_left > 0 &&
+          static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__block_cnt_r) < 4 &&
+          (dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums0_0_0 != 0 ||
+           dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums0_0_1 != 0 ||
+           dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums0_0_2 != 0)) {
+        std::cerr << "QKV psum cycle=" << cycle
+                  << " q_block=" << static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__block_cnt_r)
+                  << " psum_sel=" << static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psum_sel_r)
+                  << " out_bank=" << static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__out_bank_sel)
+                  << " psum0=["
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums0_0_0) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums0_0_1) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums0_0_2) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums0_0_3) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums0_0_4) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums0_0_5) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums0_0_6) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums0_0_7) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums0_0_8) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums0_0_9) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums0_0_10) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums0_0_11) << "]"
+                  << " psum1=["
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums1_0_0) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums1_0_1) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums1_0_2) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums1_0_3) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums1_0_4) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums1_0_5) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums1_0_6) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums1_0_7) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums1_0_8) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums1_0_9) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums1_0_10) << ","
+                  << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums1_0_11) << "]"
+                  << std::endl;
+        --debug_psum_left;
       }
       if (debug && has_v_chunk0 && dut.rootp->QKVLinear__DOT__state == 2 && debug_input_left > 0) {
         const auto obs = unpack_int8_lanes(dut.rootp->QKVLinear__DOT__vec_buffer_0_128, 12);
@@ -217,13 +535,7 @@ int main(int argc, char** argv) {
                   << " lu_block=" << static_cast<int>(dut.rootp->QKVLinear__DOT__lu_inst__DOT__block_cnt_r)
                   << " lu_addr=" << dut.io_data_addr
                   << " pipe2=" << hex_words(pipe_words, 3)
-                  << " w_lane0=" << static_cast<int>(
-                         static_cast<int8_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT____Vcellinp__mul_list_0_0__io_in1))
-                  << " w_r_sel=" << static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__weight_r_sel)
-                  << " w_w_sel=" << static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__weight_w_sel)
                   << " cu_block=" << static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__block_cnt_r)
-                  << " lw_rowblock=" << static_cast<int>(dut.rootp->QKVLinear__DOT__lw_inst__DOT__rowblock_cnt_r)
-                  << " lw_colblock=" << static_cast<int>(dut.rootp->QKVLinear__DOT__lw_inst__DOT__colblock_cnt_r)
                   << std::endl;
         --debug_input_left;
       }
@@ -236,13 +548,34 @@ int main(int argc, char** argv) {
           static_cast<uint32_t>((dut.io_data_out >> 32) & 0xffffULL),
       };
       if (debug && debug_output_left > 0) {
+        const auto* vec0 = &dut.rootp->QKVLinear__DOT__vec_buffer_0_0[0];
+        const auto* vec64 = &dut.rootp->QKVLinear__DOT__vec_buffer_0_64[0];
+        const auto* vec128 = &dut.rootp->QKVLinear__DOT__vec_buffer_0_128[0];
         std::cerr << "QKV output beat=" << seen_beats
                   << " out=" << hex_words(observed_words, 2)
                   << " golden=" << hex_words(golden.beat(seen_beats), 2)
+                  << " outLanes=" << format_qkv_output_lanes(observed_words)
+                  << " goldLanes=" << format_qkv_output_lanes(golden.beat(seen_beats))
+                  << " state=" << static_cast<int>(dut.rootp->QKVLinear__DOT__state)
                   << " head_cnt=" << static_cast<int>(dut.rootp->QKVLinear__DOT__head_cnt_r)
                   << " output_cnt=" << static_cast<int>(dut.rootp->QKVLinear__DOT__output_cnt_r)
-                  << " w_r_sel=" << static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__weight_r_sel)
-                  << " w_w_sel=" << static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__weight_w_sel)
+                  << " collectW=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collectWriteEnableReg)
+                  << " collectTok=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collectTokenReg)
+                  << " collectVec=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collectVecReg)
+                  << " vec0=" << hex_words(vec0, 3) << format_int8_lane_list(vec0, 12)
+                  << " vec64=" << hex_words(vec64, 3) << format_int8_lane_list(vec64, 12)
+                  << " vec128=" << hex_words(vec128, 3) << format_int8_lane_list(vec128, 12)
+                  << " qExp0="
+                  << (has_q_rows ? hex_words(q_rows.beat(0), 3) + format_int8_lane_list(q_rows.beat(0), 12) : "n/a")
+                  << " kExp0="
+                  << (has_k_rows ? hex_words(k_rows.beat(0), 3) + format_int8_lane_list(k_rows.beat(0), 12) : "n/a")
+                  << " vExp0="
+                  << (has_v_rows ? hex_words(v_rows.beat(0), 3) + format_int8_lane_list(v_rows.beat(0), 12) : "n/a")
+                  << " samples={" << format_vec_samples_compare(
+                         dut.rootp,
+                         has_q_rows ? &q_rows : nullptr,
+                         has_k_rows ? &k_rows : nullptr,
+                         has_v_rows ? &v_rows : nullptr) << "}"
                   << std::endl;
         --debug_output_left;
       }

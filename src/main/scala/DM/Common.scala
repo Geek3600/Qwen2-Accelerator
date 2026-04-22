@@ -1,5 +1,6 @@
 package DM
 
+import QuantCommon.{FpBackend, XilinxUramCompatMem}
 import chisel3._
 import chisel3.util._
 
@@ -13,10 +14,20 @@ class R1W1Mem(val depth: Int, val width: Int) extends Module{
     val raddr = Input(UInt(addrw.W))
     val rdata = Output(UInt(width.W))
   })
-  val mem = SyncReadMem(depth, UInt(width.W))
-  io.rdata := mem.read(io.raddr, io.ren)
-  when(io.wen ) {
-    mem.write(io.waddr, io.wdata)
+  if (FpBackend.useVivadoIp && depth == 10944 && width == 512) {
+    val mem = Module(new XilinxUramCompatMem(depth, width))
+    mem.io.write_en := io.wen
+    mem.io.write_addr := io.waddr
+    mem.io.write_data := io.wdata
+    mem.io.read_en := io.ren
+    mem.io.read_addr := io.raddr
+    io.rdata := mem.io.read_data
+  } else {
+    val mem = SyncReadMem(depth, UInt(width.W))
+    io.rdata := mem.read(io.raddr, io.ren)
+    when(io.wen ) {
+      mem.write(io.waddr, io.wdata)
+    }
   }
   // printf(p"[DM.R1W1Mem] wen = ${io.wen}, waddr = ${io.waddr}, ren = ${io.ren}, raddr = ${io.raddr}\n")
 }

@@ -99,6 +99,7 @@ module AxiBoardSystemTop(
   localparam integer AXI_BEAT_BYTES = 8;
   localparam integer LINE_BYTES = 64;
   localparam integer LINE_BEATS = LINE_BYTES / AXI_BEAT_BYTES;
+  localparam integer NUM_LAYERS = 12;
   localparam [4:0]
     ST_IDLE            = 5'd0,
     ST_LOAD_INPUT      = 5'd1,
@@ -125,7 +126,8 @@ module AxiBoardSystemTop(
     ST_PRELOAD_WAIT    = 5'd22,
     ST_RUN_CFG         = 5'd23,
     ST_RUN             = 5'd24,
-    ST_DONE            = 5'd25;
+    ST_DONE            = 5'd25,
+    ST_WRITEBACK       = 5'd26;
 
   reg [4:0] state;
   reg [31:0] issue_count;
@@ -141,6 +143,7 @@ module AxiBoardSystemTop(
   reg [16:0] max_ffndown_addr;
 
   reg [383:0] input_mem [0:INPUT_BEATS_MAX-1];
+  reg [383:0] act_mem1 [0:INPUT_BEATS_MAX-1];
   reg [383:0] ln1_w_mem [0:LN_WEIGHT_BEATS-1];
   reg [383:0] ln2_w_mem [0:LN_WEIGHT_BEATS-1];
   reg [287:0] qkv_w_mem [0:QKV_WEIGHT_BEATS-1];
@@ -166,9 +169,19 @@ module AxiBoardSystemTop(
   reg [63:0] aw_addr_reg;
   reg        token_last_pending;
   reg [10:0] token_last_core_addr;
+  reg [383:0] final_token_buf [0:63];
+  reg [6:0]   writeback_idx;
+  reg         writeback_last_token;
 
   reg [15:0] run_token_idx;
+  reg [3:0]  layer_idx;
+  reg        active_weight_bank;
+  reg        active_act_bank;
+  reg        weight_init_bank_sel;
+  reg [1:0]  weight_init_region;
+  reg [16:0] weight_init_addr;
   wire run_last_token = run_token_idx == io_cfg_seqlen;
+  wire run_last_layer = layer_idx == (NUM_LAYERS - 1);
   wire [31:0] input_beats = ({16'd0, io_cfg_seqlen} + 32'd1) << 6;
   wire is_load_state =
       state == ST_LOAD_INPUT || state == ST_LOAD_LN1 || state == ST_LOAD_QKV_W ||
@@ -176,8 +189,8 @@ module AxiBoardSystemTop(
       state == ST_LOAD_OUT_B || state == ST_LOAD_LN2 || state == ST_LOAD_FFNUP_W ||
       state == ST_LOAD_FFNUP_B || state == ST_LOAD_FFNDOWN_W || state == ST_LOAD_FFNDOWN_B;
 
-  wire core_weight_init_mode = (state == ST_WEIGHT_INIT);
-  wire core_layer_st = (state == ST_WEIGHT_INIT && weight_init_tail == 0) || (state == ST_PRELOAD_PULSE);
+  wire core_weight_init_mode = 1'b0;
+  wire core_layer_st = (state == ST_PRELOAD_PULSE);
   wire core_cfg_valid = (state == ST_RUN_CFG);
   wire [4:0] core_cfg_seqlen = 5'd0;
   wire core_cfg_prefill = 1'b1;
@@ -209,7 +222,9 @@ module AxiBoardSystemTop(
   wire [31:0] input_token_base = {10'd0, run_token_idx, 6'd0};
   wire [31:0] core_data_in_addr_abs = input_token_base + core_data_in_addr;
   wire [383:0] core_data_in =
-      (core_data_in_addr_abs < INPUT_BEATS_MAX) ? input_mem[core_data_in_addr_abs] : 384'd0;
+      (core_data_in_addr_abs < INPUT_BEATS_MAX)
+          ? (active_act_bank ? act_mem1[core_data_in_addr_abs] : input_mem[core_data_in_addr_abs])
+          : 384'd0;
   wire [383:0] core_ln1_w_in = ln1_w_mem[stream_cnt[6:0]];
   wire [383:0] core_ln2_w_in = ln2_w_mem[stream_cnt[6:0]];
   wire [95:0]  core_qkv_b_in = qkv_b_mem[stream_cnt[7:0]];
@@ -225,8 +240,26 @@ module AxiBoardSystemTop(
   wire [287:0] core_ffndown_w_in =
       (core_ffndown_w_addr < 17'd67584) ? ffndown_w_mem[core_ffndown_w_addr] : 288'd0;
   wire [383:0] core_ffndown_b_in = ffndown_b_mem[stream_cnt[5:0]];
+  wire core_qkv_w_preload_valid = (state == ST_WEIGHT_INIT) && (weight_init_region == 2'd0);
+  wire [15:0] core_qkv_w_preload_addr = weight_init_addr[15:0];
+  wire [287:0] core_qkv_w_preload_data =
+      (weight_init_addr < QKV_WEIGHT_BEATS) ? qkv_w_mem[weight_init_addr[15:0]] : 288'd0;
+  wire core_out_w_preload_valid = (state == ST_WEIGHT_INIT) && (weight_init_region == 2'd1);
+  wire [14:0] core_out_w_preload_addr = weight_init_addr[14:0];
+  wire [287:0] core_out_w_preload_data =
+      (weight_init_addr < OUT_WEIGHT_BEATS) ? out_w_mem[weight_init_addr[14:0]] : 288'd0;
+  wire core_ffnup_w_preload_valid = (state == ST_WEIGHT_INIT) && (weight_init_region == 2'd2);
+  wire [16:0] core_ffnup_w_preload_addr = weight_init_addr;
+  wire [287:0] core_ffnup_w_preload_data =
+      (weight_init_addr < FFNUP_WEIGHT_BEATS) ? ffnup_w_mem[weight_init_addr] : 288'd0;
+  wire core_ffndown_w_preload_valid = (state == ST_WEIGHT_INIT) && (weight_init_region == 2'd3);
+  wire [16:0] core_ffndown_w_preload_addr = weight_init_addr;
+  wire [287:0] core_ffndown_w_preload_data =
+      (weight_init_addr < FFNDOWN_WEIGHT_BEATS) ? ffndown_w_mem[weight_init_addr] : 288'd0;
   wire [31:0] sys_res_addr = ({16'd0, run_token_idx} << 6) + {{21{1'b0}}, core_res_addr};
+  wire [31:0] writeback_sys_res_addr = ({16'd0, run_token_idx} << 6) + {{25{1'b0}}, writeback_idx[5:0]};
   wire [63:0] output_byte_addr = io_output_base_addr + ({32'd0, sys_res_addr} * {32'd0, io_output_stride_bytes});
+  wire [63:0] writeback_output_byte_addr = io_output_base_addr + ({32'd0, writeback_sys_res_addr} * {32'd0, io_output_stride_bytes});
   wire [63:0] next_line_addr = cur_base_addr + ({32'd0, issue_count} << 6);
 
   function automatic [SOFTMAX_SEQ_LEN-1:0] make_softmax_prefix_mask;
@@ -254,6 +287,8 @@ module AxiBoardSystemTop(
     .io_attn_cfg_valid(core_attn_cfg_valid),
     .io_attn_cfg_single_query(core_attn_cfg_single_query),
     .io_weight_init_mode(core_weight_init_mode),
+    .io_weight_active_bank(active_weight_bank),
+    .io_weight_preload_bank(weight_init_bank_sel),
     .io_data_in(core_data_in),
     .io_data_in_ready(core_data_in_ready),
     .io_data_in_addr(core_data_in_addr),
@@ -279,22 +314,34 @@ module AxiBoardSystemTop(
     .io_ffndown_out_scale(io_ffndown_out_scale),
     .io_qkv_w_in(core_qkv_w_in),
     .io_qkv_w_addr(core_qkv_w_addr),
+    .io_qkv_w_preload_valid(core_qkv_w_preload_valid),
+    .io_qkv_w_preload_addr(core_qkv_w_preload_addr),
+    .io_qkv_w_preload_data(core_qkv_w_preload_data),
     .io_qkv_b_in(core_qkv_b_in),
     .io_qkv_b_valid(core_qkv_b_valid),
     .io_sm_w_in(core_sm_w_in),
     .io_sm_w_addr(core_sm_w_addr),
     .io_out_w_in(core_out_w_in),
     .io_out_w_addr(core_out_w_addr),
+    .io_out_w_preload_valid(core_out_w_preload_valid),
+    .io_out_w_preload_addr(core_out_w_preload_addr),
+    .io_out_w_preload_data(core_out_w_preload_data),
     .io_out_b_in(core_out_b_in),
     .io_out_b_valid(core_out_b_valid),
     .io_ln2_w_in(core_ln2_w_in),
     .io_ln2_w_valid(core_ln2_w_valid),
     .io_ffnup_w_in(core_ffnup_w_in),
     .io_ffnup_w_addr(core_ffnup_w_addr),
+    .io_ffnup_w_preload_valid(core_ffnup_w_preload_valid),
+    .io_ffnup_w_preload_addr(core_ffnup_w_preload_addr),
+    .io_ffnup_w_preload_data(core_ffnup_w_preload_data),
     .io_ffnup_b_in(core_ffnup_b_in),
     .io_ffnup_b_valid(core_ffnup_b_valid),
     .io_ffndown_w_in(core_ffndown_w_in),
     .io_ffndown_w_addr(core_ffndown_w_addr),
+    .io_ffndown_w_preload_valid(core_ffndown_w_preload_valid),
+    .io_ffndown_w_preload_addr(core_ffndown_w_preload_addr),
+    .io_ffndown_w_preload_data(core_ffndown_w_preload_data),
     .io_ffndown_b_in(core_ffndown_b_in),
     .io_ffndown_b_valid(core_ffndown_b_valid),
     .io_res(core_res),
@@ -306,7 +353,7 @@ module AxiBoardSystemTop(
   );
 
   assign io_done = (state == ST_DONE);
-  assign core_res_ready = (state == ST_RUN) && !wr_busy && !io_m_axi_awvalid && !io_m_axi_wvalid && !io_m_axi_bready;
+  assign core_res_ready = (state == ST_RUN);
 
   always @(*) begin
     case (state)
@@ -375,6 +422,12 @@ module AxiBoardSystemTop(
       preload_wait_cnt <= 8'd0;
       stream_cnt <= 32'd0;
       run_token_idx <= 16'd0;
+      layer_idx <= 4'd0;
+      active_weight_bank <= 1'b0;
+      active_act_bank <= 1'b0;
+      weight_init_bank_sel <= 1'b0;
+      weight_init_region <= 2'd0;
+      weight_init_addr <= 17'd0;
       max_qkv_addr <= 16'd0;
       max_out_addr <= 15'd0;
       max_ffnup_addr <= 17'd0;
@@ -421,6 +474,8 @@ module AxiBoardSystemTop(
       wr_line_buf <= 512'd0;
       aw_addr_reg <= 64'd0;
       token_last_pending <= 1'b0;
+      writeback_idx <= 7'd0;
+      writeback_last_token <= 1'b0;
       token_last_core_addr <= 11'd0;
 
       io_res <= 384'd0;
@@ -527,11 +582,9 @@ module AxiBoardSystemTop(
               ST_LOAD_FFNDOWN_W: state <= ST_LOAD_FFNDOWN_B;
               default: begin
                 state <= ST_WEIGHT_INIT;
-                max_qkv_addr <= 16'd0;
-                max_out_addr <= 15'd0;
-                max_ffnup_addr <= 17'd0;
-                max_ffndown_addr <= 17'd0;
-                weight_init_tail <= 32'd0;
+                weight_init_bank_sel <= 1'b0;
+                weight_init_region <= 2'd0;
+                weight_init_addr <= 17'd0;
               end
             endcase
           end else begin
@@ -542,13 +595,35 @@ module AxiBoardSystemTop(
         end
       end
 
-      if (!wr_busy && state == ST_RUN && core_res_valid && core_res_ready) begin
+      if (state == ST_RUN && core_res_valid && core_res_ready) begin
+        if (run_last_layer) begin
+          final_token_buf[core_res_addr[5:0]] <= core_res;
+          io_res <= core_res;
+          io_res_st <= core_res_st;
+          io_res_addr <= sys_res_addr;
+          io_res_last <= core_res_last;
+          io_res_valid <= 1'b1;
+        end else begin
+          if (active_act_bank) begin
+            input_mem[sys_res_addr] <= core_res;
+          end else begin
+            act_mem1[sys_res_addr] <= core_res;
+          end
+        end
+
+        if (core_res_last) begin
+          token_last_pending <= 1'b1;
+          token_last_core_addr <= core_res_addr;
+        end
+      end
+
+      if (!wr_busy && state == ST_WRITEBACK && writeback_idx < 7'd64) begin
         wr_busy <= 1'b1;
         wr_beat_idx <= 4'd0;
-        wr_line_buf <= {128'd0, core_res};
-        aw_addr_reg <= output_byte_addr;
+        wr_line_buf <= {128'd0, final_token_buf[writeback_idx[5:0]]};
+        aw_addr_reg <= writeback_output_byte_addr;
         io_m_axi_awid <= 5'd0;
-        io_m_axi_awaddr <= output_byte_addr;
+        io_m_axi_awaddr <= writeback_output_byte_addr;
         io_m_axi_awlen <= LINE_BEATS - 1;
         io_m_axi_awsize <= 3'd3;
         io_m_axi_awburst <= 2'b01;
@@ -558,17 +633,6 @@ module AxiBoardSystemTop(
         io_m_axi_awregion <= 4'd0;
         io_m_axi_awqos <= 4'd0;
         io_m_axi_awvalid <= 1'b1;
-
-        io_res <= core_res;
-        io_res_st <= core_res_st;
-        io_res_addr <= sys_res_addr;
-        io_res_last <= core_res_last;
-        io_res_valid <= 1'b1;
-
-        if (core_res_last) begin
-          token_last_pending <= 1'b1;
-          token_last_core_addr <= core_res_addr;
-        end
       end
 
       if (io_m_axi_awvalid && io_m_axi_awready) begin
@@ -607,6 +671,18 @@ module AxiBoardSystemTop(
       if (io_m_axi_bvalid && io_m_axi_bready) begin
         io_m_axi_bready <= 1'b0;
         wr_busy <= 1'b0;
+        if (state == ST_WRITEBACK) begin
+          if (writeback_idx == 7'd63) begin
+            if (writeback_last_token) begin
+              state <= ST_DONE;
+            end else begin
+              run_token_idx <= run_token_idx + 16'd1;
+              state <= ST_RUN_CFG;
+            end
+          end else begin
+            writeback_idx <= writeback_idx + 7'd1;
+          end
+        end
       end
 
       case (state)
@@ -614,26 +690,58 @@ module AxiBoardSystemTop(
           issue_count <= 32'd0;
           recv_count <= 32'd0;
           run_token_idx <= 16'd0;
+          layer_idx <= 4'd0;
+          active_weight_bank <= 1'b0;
+          active_act_bank <= 1'b0;
+          weight_init_bank_sel <= 1'b0;
+          weight_init_region <= 2'd0;
+          weight_init_addr <= 17'd0;
           token_last_pending <= 1'b0;
           if (io_start) begin
             state <= ST_LOAD_INPUT;
           end
         end
         ST_WEIGHT_INIT: begin
-          if (core_qkv_w_addr > max_qkv_addr) max_qkv_addr <= core_qkv_w_addr;
-          if (core_out_w_addr > max_out_addr) max_out_addr <= core_out_w_addr;
-          if (core_ffnup_w_addr > max_ffnup_addr) max_ffnup_addr <= core_ffnup_w_addr;
-          if (core_ffndown_w_addr > max_ffndown_addr) max_ffndown_addr <= core_ffndown_w_addr;
-          if (max_qkv_addr == 16'd49151 &&
-              max_out_addr == 15'd16895 &&
-              max_ffnup_addr == 17'd66047 &&
-              max_ffndown_addr == 17'd67583) begin
-            weight_init_tail <= weight_init_tail + 32'd1;
-            if (weight_init_tail == 32'd127) begin
-              state <= ST_CORE_RESET;
-              core_reset_cnt <= 8'd0;
+          case (weight_init_region)
+            2'd0: begin
+              if (weight_init_addr == QKV_WEIGHT_BEATS - 1) begin
+                weight_init_region <= 2'd1;
+                weight_init_addr <= 17'd0;
+              end else begin
+                weight_init_addr <= weight_init_addr + 17'd1;
+              end
             end
-          end
+            2'd1: begin
+              if (weight_init_addr == OUT_WEIGHT_BEATS - 1) begin
+                weight_init_region <= 2'd2;
+                weight_init_addr <= 17'd0;
+              end else begin
+                weight_init_addr <= weight_init_addr + 17'd1;
+              end
+            end
+            2'd2: begin
+              if (weight_init_addr == FFNUP_WEIGHT_BEATS - 1) begin
+                weight_init_region <= 2'd3;
+                weight_init_addr <= 17'd0;
+              end else begin
+                weight_init_addr <= weight_init_addr + 17'd1;
+              end
+            end
+            default: begin
+              if (weight_init_addr == FFNDOWN_WEIGHT_BEATS - 1) begin
+                if (!weight_init_bank_sel) begin
+                  weight_init_bank_sel <= 1'b1;
+                  weight_init_region <= 2'd0;
+                  weight_init_addr <= 17'd0;
+                end else begin
+                  state <= ST_CORE_RESET;
+                  core_reset_cnt <= 8'd0;
+                end
+              end else begin
+                weight_init_addr <= weight_init_addr + 17'd1;
+              end
+            end
+          endcase
         end
         ST_CORE_RESET: begin
           core_reset_cnt <= core_reset_cnt + 8'd1;
@@ -681,6 +789,7 @@ module AxiBoardSystemTop(
           stream_cnt <= stream_cnt + 32'd1;
           if (stream_cnt + 32'd1 == FFNDOWN_BIAS_BEATS) begin
             run_token_idx <= 16'd0;
+            token_last_pending <= 1'b0;
             state <= ST_RUN_CFG;
           end
         end
@@ -698,23 +807,36 @@ module AxiBoardSystemTop(
           end
         end
         ST_RUN: begin
-          if (token_last_pending && !wr_busy && !io_m_axi_awvalid && !io_m_axi_wvalid && !io_m_axi_bready) begin
+          if (token_last_pending) begin
             $display(
-              "AxiBoardSystemTop token-done token=%0d cfg_seqlen=%0d run_last_token=%0d core_res_addr=%0d sys_res_addr=%0d",
+              "AxiBoardSystemTop token-done layer=%0d token=%0d cfg_seqlen=%0d run_last_token=%0d run_last_layer=%0d core_res_addr=%0d sys_res_addr=%0d",
+              layer_idx,
               run_token_idx,
               io_cfg_seqlen,
               run_last_token,
+              run_last_layer,
               token_last_core_addr,
               (({16'd0, run_token_idx} << 6) + {{21{1'b0}}, token_last_core_addr})
             );
             token_last_pending <= 1'b0;
-            if (run_last_token) begin
-              state <= ST_DONE;
+            if (run_last_layer) begin
+              writeback_idx <= 7'd0;
+              writeback_last_token <= run_last_token;
+              state <= ST_WRITEBACK;
+            end else if (run_last_token) begin
+              layer_idx <= layer_idx + 4'd1;
+              active_weight_bank <= ~active_weight_bank;
+              active_act_bank <= ~active_act_bank;
+              run_token_idx <= 16'd0;
+              state <= ST_CORE_RESET;
+              core_reset_cnt <= 8'd0;
             end else begin
               run_token_idx <= run_token_idx + 16'd1;
               state <= ST_RUN_CFG;
             end
           end
+        end
+        ST_WRITEBACK: begin
         end
         ST_DONE: begin
         end

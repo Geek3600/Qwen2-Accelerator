@@ -6,7 +6,7 @@ import chisel3.util._
 
 class StoreUnit extends Module {
   val io = IO(new Bundle() {
-    val cfg_seqlen = Input(UInt(log2Up(MAX_PREFILL).W))
+    val cfg_seqlen = Input(UInt(log2Up(LOCAL_PREFILL).W))
     val cfg_prefill = Input(Bool())
     val cfg_valid = Input(Bool())
 
@@ -22,7 +22,7 @@ class StoreUnit extends Module {
 
   val seqlen = RegEnable(io.cfg_seqlen,io.cfg_valid)
   val is_prefill = RegEnable(io.cfg_prefill,io.cfg_valid)
-  val batch_cnt = Wire(UInt(log2Up(math.max(BATCHSIZE,MAX_PREFILL)).W))//prefill的时候是prelen，decode的时候是batchsize
+  val batch_cnt = Wire(UInt(log2Up(math.max(BATCHSIZE, LOCAL_PREFILL)).W))//prefill的时候是prelen，decode的时候是batchsize
   val batch_last = batch_cnt === Mux(is_prefill,seqlen, (BATCHSIZE - 1).U)
   batch_cnt := RegEnable(
     Mux(

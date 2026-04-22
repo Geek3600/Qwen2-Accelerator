@@ -1,0 +1,6 @@
+{
+  "alias": "q_bias_scale",
+  "kind": "scalar",
+  "value": 0.0237884521484375,
+  "source_file": "weight/pyjm_layer/pyjm_layer/q.json"
+}

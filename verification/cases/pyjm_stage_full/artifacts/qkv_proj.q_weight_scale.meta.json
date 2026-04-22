@@ -1,0 +1,6 @@
+{
+  "alias": "q_weight_scale",
+  "kind": "scalar",
+  "value": 0.0005102157592773438,
+  "source_file": "weight/pyjm_layer/pyjm_layer/q.json"
+}

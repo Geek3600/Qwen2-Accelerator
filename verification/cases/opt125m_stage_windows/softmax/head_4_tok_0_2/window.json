@@ -1,0 +1,12 @@
+{
+  "stage": "softmax",
+  "validator": "softmaxfp32",
+  "top_module": "SoftmaxPipFP32",
+  "token_start": 0,
+  "token_count": 2,
+  "head_idx": 4,
+  "cfg_seqlen": 1,
+  "input_beats": 26,
+  "mask_beats": 26,
+  "output_beats": 2
+}

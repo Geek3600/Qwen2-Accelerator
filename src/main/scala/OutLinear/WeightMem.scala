@@ -1,67 +1,77 @@
 package OutLinear
 
+import QuantCommon.XilinxUramCompatMem
 import chisel3._
 import chisel3.util._
 import OutLinear.Param._
 
-// OutLinear 权重存储器
-// 容量: 19,008 × 288 位 = 5.47 Mb
-// 拆分: 5 banks × 4 slices = 20 个 URAM
+// OutLinear 权重存储器，扩展为 active/shadow 双 bank。
 class WeightMem extends Module {
   val io = IO(new Bundle {
-    // 初始化接口
     val init_mode = Input(Bool())
     val init_addr = Input(UInt(log2Up(WMEM_DEPTH).W))
     val init_data = Input(UInt(WMEM_WIDTH.W))
     val init_wen = Input(Bool())
 
-    // 读取接口
+    val preload_valid = Input(Bool())
+    val preload_bank = Input(Bool())
+    val preload_addr = Input(UInt(log2Up(WMEM_DEPTH).W))
+    val preload_data = Input(UInt(WMEM_WIDTH.W))
+
     val read_en = Input(Bool())
-    val read_addr = Input(UInt(log2Up(WMEM_DEPTH).W))
-    val read_data = Output(UInt(WMEM_WIDTH.W))
+    val read_bank = Input(Bool())
+    val read_addr = Input(UInt(log2Up(ROWBLOCK * COLBLOCK).W))
+    val read_data = Output(Vec(ROW, UInt(WMEM_WIDTH.W)))
   })
 
-  // 参数
-  val NUM_BANKS = 5     // 深度方向分 5 个 bank (19008/4096 ≈ 5)
-  val BANK_DEPTH = 4096
-  val NUM_SLICES = 4    // 位宽方向分 4 个 slice (288/72 = 4)
+  val TILE_DEPTH = ROWBLOCK * COLBLOCK
+  val BANK_DEPTH = TILE_DEPTH
+  val NUM_SLICES = 4
   val SLICE_WIDTH = 72
 
-  // 创建存储器阵列：5 banks × 4 slices = 20 个 URAM
-  val weight_banks = Seq.fill(NUM_BANKS)(
-    Seq.fill(NUM_SLICES)(
-      SyncReadMem(BANK_DEPTH, UInt(SLICE_WIDTH.W))
+  val weight_banks = Seq.fill(2)(
+    Seq.fill(ROW)(
+      Seq.fill(NUM_SLICES)(Module(new XilinxUramCompatMem(BANK_DEPTH, SLICE_WIDTH)))
     )
   )
 
-  // 地址解码
-  val bank_sel = io.init_addr(14, 12)  // 高 3 位选择 bank (0-4)
-  val bank_addr = io.init_addr(11, 0)  // 低 12 位是 bank 内地址 (0-4095)
+  val legacyWrite = io.init_mode && io.init_wen
+  val preloadWrite = io.preload_valid
+  assert(!(legacyWrite && preloadWrite), "OutLinear WeightMem legacy init and preload collided")
 
-  // 写入（初始化模式）
-  for (b <- 0 until NUM_BANKS) {
-    for (s <- 0 until NUM_SLICES) {
-      when(io.init_mode && io.init_wen && bank_sel === b.U) {
-        weight_banks(b)(s).write(
-          bank_addr,
-          io.init_data((s+1)*SLICE_WIDTH-1, s*SLICE_WIDTH)
-        )
+  val writeBank = Mux(preloadWrite, io.preload_bank, false.B)
+  val writeAddr = Mux(preloadWrite, io.preload_addr, io.init_addr)
+  val writeData = Mux(preloadWrite, io.preload_data, io.init_data)
+  val writeFire = legacyWrite || preloadWrite
+  val writeColBlock = writeAddr % COLBLOCK.U
+  val writeRowLinear = writeAddr / COLBLOCK.U
+  val writeRowSel = writeRowLinear % ROW.U
+  val writeRowBlock = writeRowLinear / ROW.U
+  val writeTileAddr = writeColBlock * ROWBLOCK.U + writeRowBlock
+
+  for (copy <- 0 until 2) {
+    for (b <- 0 until ROW) {
+      for (s <- 0 until NUM_SLICES) {
+        weight_banks(copy)(b)(s).io.write_en := writeFire && writeBank === (copy == 1).B && writeRowSel === b.U
+        weight_banks(copy)(b)(s).io.write_addr := writeTileAddr
+        weight_banks(copy)(b)(s).io.write_data := writeData((s + 1) * SLICE_WIDTH - 1, s * SLICE_WIDTH)
+        weight_banks(copy)(b)(s).io.read_en := io.read_en
+        weight_banks(copy)(b)(s).io.read_addr := io.read_addr
       }
     }
   }
 
-  // 读取（计算模式）
-  val read_bank_sel = io.read_addr(14, 12)
-  val read_bank_addr = io.read_addr(11, 0)
-
-  val read_datas = for (b <- 0 until NUM_BANKS) yield {
-    val slices = for (s <- 0 until NUM_SLICES) yield {
-      weight_banks(b)(s).read(read_bank_addr, io.read_en && !io.init_mode)
+  val readDatas = for (copy <- 0 until 2) yield {
+    for (b <- 0 until ROW) yield {
+      val slices = for (s <- 0 until NUM_SLICES) yield {
+        weight_banks(copy)(b)(s).io.read_data
+      }
+      Cat(slices.reverse)
     }
-    Cat(slices.reverse)
   }
 
-  io.read_data := MuxLookup(RegNext(read_bank_sel), 0.U)(
-    (0 until NUM_BANKS).map(i => i.U -> read_datas(i))
-  )
+  val selectedCopy = RegNext(io.read_bank, false.B)
+  for (i <- 0 until ROW) {
+    io.read_data(i) := Mux(selectedCopy, readDatas(1)(i), readDatas(0)(i))
+  }
 }

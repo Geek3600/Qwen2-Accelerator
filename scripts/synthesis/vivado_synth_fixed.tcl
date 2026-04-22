@@ -56,7 +56,7 @@ synth_design \
     -top Top \
     -part xcvu9p-flga2104-2-i \
     -mode out_of_context \
-    -flatten_hierarchy none \
+    -flatten_hierarchy rebuilt \
     -keep_equivalent_registers \
     -resource_sharing off \
     -no_lc \

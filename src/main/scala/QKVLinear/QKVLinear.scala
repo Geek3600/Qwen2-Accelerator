@@ -2,6 +2,7 @@ package QKVLinear
 
 import QKVLinear._
 import QuantCommon.Precision._
+import QuantCommon.{FpBackend, XilinxFpTargetConfig}
 import chisel3._
 import chisel3.util._
 import QKVLinear.Param._
@@ -21,6 +22,11 @@ class QKVLinear extends Module {
     val weight_init_mode = Input(Bool())  // true: 初始化模式, false: 计算模式
     val weight_init_data = Input(UInt(WMEM_WIDTH.W))
     val weight_init_addr = Output(UInt(log2Up(WMEM_DEPTH).W))
+    val weight_active_bank = Input(Bool())
+    val weight_preload_bank = Input(Bool())
+    val weight_preload_valid = Input(Bool())
+    val weight_preload_addr = Input(UInt(log2Up(WMEM_DEPTH).W))
+    val weight_preload_data = Input(UInt(WMEM_WIDTH.W))
     val bias_init_data = Input(UInt(MEM_WIDTH.W))
     val bias_init_valid = Input(Bool())
     val q_out_inv_scale = Input(UInt(FP32_WIDTH.W))
@@ -47,6 +53,7 @@ class QKVLinear extends Module {
     // 输出到 Attention (Load0 格式: 48-bit [V1,V0|K1,K0|Q1,Q0])
     val data_out = Output(UInt(48.W))
     val data_out_st = Output(Bool())
+    val data_out_head = Output(UInt(log2Up(HEAD_NUM).W))
     val data_out_addr = Output(UInt(32.W))
     val data_out_valid = Output(Bool())
     val data_out_last = Output(Bool())
@@ -66,7 +73,7 @@ class QKVLinear extends Module {
   val cu_inst = Module(new CUQuant)
   val su_inst = Module(new StoreUnit)
   val lw_inst = Module(new LoadWeight)
-  val bias_mem = RegInit(VecInit(Seq.fill(OUT_VECTOR / ROW)(0.U(MEM_WIDTH.W))))
+  val bias_mem = Reg(Vec(OUT_VECTOR / ROW, UInt(MEM_WIDTH.W)))
   val bias_init_cnt = RegInit(0.U(log2Up(OUT_VECTOR / ROW).W))
 
   when(io.bias_init_valid) {
@@ -89,10 +96,12 @@ class QKVLinear extends Module {
   lu_inst.io.cfg_seqlen := io.cfg_seqlen
   lu_inst.io.cfg_valid := io.cfg_valid
   lu_inst.io.cfg_single_query := io.cfg_single_query
+  lu_inst.io.weight_ready := lw_inst.io.weight_ready
 
   cu_inst.io.data_in := lu_inst.io.data_out
   cu_inst.io.data_in_valid := lu_inst.io.data_out_valid
   cu_inst.io.w_data := lw_inst.io.data_out
+  cu_inst.io.w_data_sel := lw_inst.io.data_out_sel
   cu_inst.io.w_valid := lw_inst.io.data_out_valid
   cu_inst.io.cfg_prefill := io.cfg_prefill
   cu_inst.io.cfg_seqlen := io.cfg_seqlen
@@ -107,9 +116,14 @@ class QKVLinear extends Module {
   su_inst.io.cfg_single_query := io.cfg_single_query
 
   lw_inst.io.update := cu_inst.io.w_update
-  lw_inst.io.st := io.layer_st
+  lw_inst.io.st := io.layer_st || (io.data_in_st && !mem_inst.io.r_ready)
   lw_inst.io.init_mode := io.weight_init_mode
   lw_inst.io.init_data := io.weight_init_data
+  lw_inst.io.active_bank := io.weight_active_bank
+  lw_inst.io.preload_valid := io.weight_preload_valid
+  lw_inst.io.preload_bank := io.weight_preload_bank
+  lw_inst.io.preload_addr := io.weight_preload_addr
+  lw_inst.io.preload_data := io.weight_preload_data
 
   io.data_ready := mem_inst.io.w_ready
   io.weight_init_addr := lw_inst.io.init_addr
@@ -130,31 +144,71 @@ class QKVLinear extends Module {
   val all_output_done = WireDefault(false.B)
   val collect_start = is_idle || (is_outputting && all_output_done && io.data_out_ready)
   val collect_fire = su_inst.io.data_out_valid && (is_collecting || collect_start)
+  val epilogueLatency =
+    if (FpBackend.useVivadoIp)
+      XilinxFpTargetConfig.FixedToFloatLatency +
+        XilinxFpTargetConfig.MulLatency +
+        XilinxFpTargetConfig.AddLatency +
+        XilinxFpTargetConfig.FloatToFixedLatency
+    else
+      0
 
   // 收集计数器 (192 次收集 2304 维)
   val COLLECT_NUM = OUT_VECTOR / ROW  // = 2304 / 12 = 192
   val collect_addr = su_inst.io.data_out_addr
-  val collect_token = (collect_addr / COLLECT_NUM.U)(log2Up(BATCHSIZE) - 1, 0)
-  val collect_vec = collect_addr % COLLECT_NUM.U
   val collect_done = su_inst.io.data_out_last
+  val collect_commit = Wire(Bool())
+  val collect_addr_d = Wire(UInt(collect_addr.getWidth.W))
+  val collect_done_d = Wire(Bool())
+  if (epilogueLatency == 0) {
+    collect_commit := collect_fire
+    collect_addr_d := collect_addr
+    collect_done_d := collect_done && collect_fire
+  } else {
+    val collect_valid_pipe = RegInit(VecInit(Seq.fill(epilogueLatency)(false.B)))
+    val collect_addr_pipe = RegInit(VecInit(Seq.fill(epilogueLatency)(0.U(collect_addr.getWidth.W))))
+    val collect_done_pipe = RegInit(VecInit(Seq.fill(epilogueLatency)(false.B)))
+    collect_valid_pipe(0) := collect_fire
+    collect_addr_pipe(0) := collect_addr
+    collect_done_pipe(0) := collect_done && collect_fire
+    for (i <- 1 until epilogueLatency) {
+      collect_valid_pipe(i) := collect_valid_pipe(i - 1)
+      collect_addr_pipe(i) := collect_addr_pipe(i - 1)
+      collect_done_pipe(i) := collect_done_pipe(i - 1)
+    }
+    collect_commit := collect_valid_pipe.last
+    collect_addr_d := collect_addr_pipe.last
+    collect_done_d := collect_done_pipe.last
+  }
+  val collect_token = (collect_addr_d / COLLECT_NUM.U)(log2Up(BATCHSIZE) - 1, 0)
+  val collect_vec = collect_addr_d % COLLECT_NUM.U
 
   // 缓存所有 token 的 2304 维向量
   val vec_buffer = Reg(Vec(BATCHSIZE, Vec(COLLECT_NUM, UInt(MEM_WIDTH.W))))
+  val collectWriteEnableReg = RegInit(false.B)
+  collectWriteEnableReg.suggestName("collectWriteEnableReg")
+  val collectTokenReg = Reg(UInt(collect_token.getWidth.W))
+  collectTokenReg.suggestName("collectTokenReg")
+  val collectVecReg = Reg(UInt(collect_vec.getWidth.W))
+  collectVecReg.suggestName("collectVecReg")
+  val collectDataReg = Reg(UInt(MEM_WIDTH.W))
+  collectDataReg.suggestName("collectDataReg")
+  val collect_vec_now = collect_addr % COLLECT_NUM.U
   val scale_sel = Mux(
-    collect_vec < (768 / ROW).U,
+    collect_vec_now < (768 / ROW).U,
     io.q_out_inv_scale,
-    Mux(collect_vec < (2 * 768 / ROW).U, io.k_out_inv_scale, io.v_out_inv_scale)
+    Mux(collect_vec_now < (2 * 768 / ROW).U, io.k_out_inv_scale, io.v_out_inv_scale)
   )
   val bias_scale_sel = Mux(
-    collect_vec < (768 / ROW).U,
+    collect_vec_now < (768 / ROW).U,
     io.q_bias_scale,
-    Mux(collect_vec < (2 * 768 / ROW).U, io.k_bias_scale, io.v_bias_scale)
+    Mux(collect_vec_now < (2 * 768 / ROW).U, io.k_bias_scale, io.v_bias_scale)
   )
   val epilogue_inst = Module(new Int32VecScaleBiasToSInt32(ROW))
-  epilogue_inst.io.in := su_inst.io.data_out
-  epilogue_inst.io.accScale := scale_sel
-  epilogue_inst.io.bias := bias_mem(collect_vec)
-  epilogue_inst.io.biasScale := bias_scale_sel
+  epilogue_inst.io.in := Mux(collect_fire, su_inst.io.data_out, 0.U(su_inst.io.data_out.getWidth.W))
+  epilogue_inst.io.accScale := Mux(collect_fire, scale_sel, 0.U(FP32_WIDTH.W))
+  epilogue_inst.io.bias := Mux(collect_fire, bias_mem(collect_vec_now), 0.U(MEM_WIDTH.W))
+  epilogue_inst.io.biasScale := Mux(collect_fire, bias_scale_sel, 0.U(FP32_WIDTH.W))
 
   val su_vec = epilogue_inst.io.out.asTypeOf(Vec(ROW, SInt(INT32_WIDTH.W)))
   val biased_vec = Wire(Vec(ROW, SInt(DATAW.W)))
@@ -167,17 +221,27 @@ class QKVLinear extends Module {
       Mux(su_vec(i) < minVal, minVal, su_vec(i)(DATAW - 1, 0).asSInt)
     )
   }
-  when(collect_fire) {
-    vec_buffer(collect_token)(collect_vec) := biased_vec.asUInt
+  collectWriteEnableReg := collect_commit
+  when(collect_commit) {
+    collectTokenReg := collect_token
+    collectVecReg := collect_vec
+    collectDataReg := biased_vec.asUInt
+  }
+  when(collectWriteEnableReg) {
+    vec_buffer(collectTokenReg)(collectVecReg) := collectDataReg
   }
 
   // Head 计数器 (0~HEAD_NUM-1)
   val head_cnt = Wire(UInt(log2Up(HEAD_NUM + 1).W))
   val head_last = head_cnt === (HEAD_NUM - 1).U
   val prefill_cnt = Wire(UInt(log2Up(MAX_PREFILL + 1).W))
-  val batch_cnt = Wire(UInt(log2Up(BATCHSIZE + 1).W))
+  val batch_cnt = Wire(UInt(log2Up(BATCHSIZE).W))
   val current_token = Mux(is_prefill, prefill_cnt, batch_cnt)
-  val full_vec = vec_buffer(current_token).asUInt.asTypeOf(Vec(OUT_VECTOR, UInt(DATAW.W)))
+  // vec_buffer holds exactly BATCHSIZE tokens; batch_cnt never reaches 32 and
+  // prefill_cnt is narrower, so trimming the unreachable high bit avoids
+  // building a wider-than-necessary dynamic mux without changing semantics.
+  val current_token_idx = current_token(log2Up(BATCHSIZE) - 1, 0)
+  val full_vec = vec_buffer(current_token_idx).asUInt.asTypeOf(Vec(OUT_VECTOR, UInt(DATAW.W)))
 
   // 提取 Q/K/V (用 head_cnt 偏移选择当前 head)
   // Q: [head*64 : head*64+63], K: [768+head*64 : ...], V: [1536+head*64 : ...]
@@ -194,7 +258,7 @@ class QKVLinear extends Module {
 
   // 输出计数器 (32 次，每次输出 2 个 Q + 2 个 K + 2 个 V)
   val OUTPUT_NUM = HEAD_DIM / 2  // = 32
-  val output_cnt = Wire(UInt(log2Up(OUTPUT_NUM + 1).W))
+  val output_cnt = Wire(UInt(log2Up(OUTPUT_NUM).W))
   val output_last = output_cnt === (OUTPUT_NUM - 1).U
 
   output_cnt := RegEnable(
@@ -251,7 +315,7 @@ class QKVLinear extends Module {
       }
     }
     is(collecting) {
-      when(collect_done && collect_fire) {
+      when(collectWriteEnableReg && collectVecReg === (COLLECT_NUM - 1).U) {
         state := outputting
       }
     }
@@ -265,8 +329,11 @@ class QKVLinear extends Module {
   // 输出信号
   io.data_out := out_data
   io.data_out_valid := is_outputting
-  // data_out_st: 每个 head 的第一个 token 的第一个 output
-  io.data_out_st := is_outputting && output_cnt === 0.U && prefill_cnt === 0.U && batch_cnt === 0.U
+  // data_out_st should mark the first beat of each head stream, not the first
+  // beat of every token inside that head. Otherwise DM1/VCache open a new write
+  // bank on each token while only closing once per head.
+  io.data_out_st := is_outputting && output_cnt === 0.U && current_token === 0.U
+  io.data_out_head := head_cnt
   // data_out_last: 每个 head 的所有 token 输出完毕（不是 12 个 head 全部结束）
   io.data_out_last := is_outputting && output_last && token_last
 

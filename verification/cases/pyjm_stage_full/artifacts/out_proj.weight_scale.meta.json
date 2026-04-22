@@ -1,0 +1,6 @@
+{
+  "alias": "weight_scale",
+  "kind": "scalar",
+  "value": 0.0008769035339355469,
+  "source_file": "weight/pyjm_layer/pyjm_layer/out_proj.json"
+}

@@ -1,0 +1,13 @@
+{
+  "alias": "input",
+  "kind": "tensor",
+  "shape": [
+    1,
+    16,
+    768
+  ],
+  "dtype": "int8",
+  "num_values": 12288,
+  "source_file": "weight/pyjm_layer/pyjm_layer/out_proj.json",
+  "binary_file": "artifacts/out_proj.input.int8.bin"
+}

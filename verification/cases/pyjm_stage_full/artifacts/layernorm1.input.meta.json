@@ -1,0 +1,13 @@
+{
+  "alias": "input",
+  "kind": "tensor",
+  "shape": [
+    1,
+    16,
+    768
+  ],
+  "dtype": "float32",
+  "num_values": 12288,
+  "source_file": "weight/pyjm_layer/pyjm_layer/ln1.json",
+  "binary_file": "artifacts/layernorm1.input.float32.bin"
+}

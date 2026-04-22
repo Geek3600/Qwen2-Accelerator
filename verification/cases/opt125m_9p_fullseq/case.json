@@ -1,7 +1,7 @@
 {
   "board_model": "9p-ddr-only",
   "fpga_part": "xcvu9p_CIV-flgb2104-2-i",
-  "source_case_dir": "verification/cases/opt125m_stage_full",
+  "source_case_dir": "/home/remote/workspace/Qwen2-Accelerator/verification/cases/opt125m_stage_full",
   "token_count_full": 912,
   "ddr_word_width_bits": 512,
   "ddr_u32_words_per_beat": 16,

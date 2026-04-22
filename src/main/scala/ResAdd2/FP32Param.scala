@@ -7,8 +7,8 @@ object FP32Param {
   val SUBVEC = LANES
   val DATA_WIDTH = FP32_PACK_WIDTH
 
-  val BATCHSIZE = 32
-  val MAX_PREFILL = 8
-  val MAX_SEQLEN = 26
+  val BATCHSIZE = 16
+  val MAX_SEQLEN = 16
+  val MAX_PREFILL = MAX_SEQLEN
   val MEM_DEPTH = 2048
 }

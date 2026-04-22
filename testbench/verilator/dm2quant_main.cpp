@@ -16,113 +16,152 @@ int main(int argc, char** argv) {
     const auto v_in = read_words(window_dir / "artifacts" / "v_in.u32.bin", 16);
     const auto golden = read_words(window_dir / "artifacts" / "golden.u32.bin", 16);
     const bool debug = std::getenv("DM2_DEBUG") != nullptr;
-    int debug_left = 16;
+    const auto cfg_prefill = cfg.count("cfg_prefill") ? static_cast<uint32_t>(cfg_int(cfg, "cfg_prefill")) : 1U;
+    const auto cfg_single_query =
+        cfg.count("cfg_single_query") ? static_cast<uint32_t>(cfg_int(cfg, "cfg_single_query")) : 0U;
 
     VDM2Quant dut;
-    dut.io_cfg_prefill = 1;
+    dut.io_cfg_prefill = cfg_prefill;
     dut.io_cfg_seqlen = cfg_int(cfg, "cfg_seqlen");
-    dut.io_cfg_single_query = 0;
+    dut.io_cfg_single_query = cfg_single_query;
     dut.io_cfg_valid = 0;
     dut.io_ctx_inv_scale = cfg_u32(cfg, "ctx_inv_scale_u32");
     dut.io_ctx_zero_point = cfg_u32(cfg, "ctx_zero_point_u8");
     dut.io_out_inv_scale = cfg_u32(cfg, "out_inv_scale_u32");
-    dut.io_data_in_v_st = 0;
     dut.io_data_in_v_valid = 0;
-    dut.io_data_in_v_last = 0;
     dut.io_data_in_ctx_st = 0;
     dut.io_data_in_ctx_valid = 0;
-    dut.io_data_in_ctx_last = 0;
     dut.io_res_ready = 1;
     zero_words(dut.io_data_in_v, 16);
     zero_words(dut.io_data_in_ctx, 26);
 
     reset_dut(dut);
 
-    for (std::size_t beat = 0; beat < v_in.beats(); ++beat) {
-      copy_words(dut.io_data_in_v, v_in.beat(beat), 16);
-      dut.io_data_in_v_addr = beat;
-      dut.io_data_in_v_st = (beat == 0);
-      dut.io_data_in_v_valid = 1;
-      dut.io_data_in_v_last = (beat + 1 == v_in.beats());
-      tick(dut);
-    }
-    dut.io_data_in_v_st = 0;
-    dut.io_data_in_v_valid = 0;
-    dut.io_data_in_v_last = 0;
-    zero_words(dut.io_data_in_v, 16);
+    dut.io_cfg_valid = 1;
+    tick(dut);
+    dut.io_cfg_valid = 0;
 
-    for (std::size_t beat = 0; beat < ctx_in.beats(); ++beat) {
-      copy_words(dut.io_data_in_ctx, ctx_in.beat(beat), 26);
-      dut.io_data_in_ctx_addr = beat;
-      dut.io_data_in_ctx_st = (beat == 0);
-      dut.io_data_in_ctx_valid = 1;
-      dut.io_data_in_ctx_last = (beat + 1 == ctx_in.beats());
+    std::size_t v_beat = 0;
+    std::size_t ctx_beat = 0;
+    int feed_cycle = 0;
+    while (v_beat < v_in.beats() || ctx_beat < ctx_in.beats()) {
+      if (v_beat < v_in.beats()) {
+        copy_words(dut.io_data_in_v, v_in.beat(v_beat), 16);
+        dut.io_data_in_v_valid = 1;
+      } else {
+        dut.io_data_in_v_valid = 0;
+        zero_words(dut.io_data_in_v, 16);
+      }
+
+      if (ctx_beat < ctx_in.beats()) {
+        copy_words(dut.io_data_in_ctx, ctx_in.beat(ctx_beat), 26);
+        dut.io_data_in_ctx_st = (ctx_beat == 0);
+        dut.io_data_in_ctx_valid = 1;
+      } else {
+        dut.io_data_in_ctx_st = 0;
+        dut.io_data_in_ctx_valid = 0;
+        zero_words(dut.io_data_in_ctx, 26);
+      }
+
       tick(dut);
+      if (debug && ((feed_cycle < 96) || ((feed_cycle % 2000) == 0))) {
+        auto* root = dut.rootp;
+        std::cerr << "dm2_feed cycle=" << feed_cycle
+                  << " v_beat=" << v_beat << "/" << v_in.beats()
+                  << " ctx_beat=" << ctx_beat << "/" << ctx_in.beats()
+                  << " v_ready=" << static_cast<unsigned>(dut.io_data_in_v_ready)
+                  << " ctx_ready=" << static_cast<unsigned>(dut.io_data_in_ctx_ready)
+                  << " state=" << static_cast<unsigned>(root->DM2Quant__DOT__dmInst__DOT__state)
+                  << " tileBase=" << static_cast<unsigned>(root->DM2Quant__DOT__dmInst__DOT__tileBase)
+                  << " tileLoadCnt=" << static_cast<unsigned>(root->DM2Quant__DOT__dmInst__DOT__tileLoadCnt)
+                  << " waitctxCnt=" << static_cast<unsigned>(root->DM2Quant__DOT__dmInst__DOT__waitctxCnt)
+                  << " ctxPipeLast=" << static_cast<unsigned>(root->DM2Quant__DOT__ctxQuantValidPipe_27)
+                  << " realCtxFire=" << static_cast<unsigned>(root->DM2Quant__DOT__unnamedblk1__DOT__realCtxFire)
+                  << std::endl;
+      }
+      if (v_beat < v_in.beats() && dut.io_data_in_v_ready) {
+        ++v_beat;
+      }
+      if (ctx_beat < ctx_in.beats() && dut.io_data_in_ctx_ready) {
+        ++ctx_beat;
+      }
+      ++feed_cycle;
     }
+    dut.io_data_in_v_valid = 0;
     dut.io_data_in_ctx_st = 0;
     dut.io_data_in_ctx_valid = 0;
-    dut.io_data_in_ctx_last = 0;
+    zero_words(dut.io_data_in_v, 16);
     zero_words(dut.io_data_in_ctx, 26);
 
-    dut.io_cfg_prefill = 1;
+    dut.io_cfg_prefill = cfg_prefill;
     dut.io_cfg_seqlen = cfg_int(cfg, "cfg_seqlen");
-    dut.io_cfg_single_query = 0;
-    dut.io_cfg_valid = 1;
+    dut.io_cfg_single_query = cfg_single_query;
+    dut.io_cfg_valid = 0;
     dut.io_ctx_inv_scale = cfg_u32(cfg, "ctx_inv_scale_u32");
     dut.io_ctx_zero_point = cfg_u32(cfg, "ctx_zero_point_u8");
     dut.io_out_inv_scale = cfg_u32(cfg, "out_inv_scale_u32");
     dut.io_res_ready = 1;
-    tick(dut);
-    dut.io_cfg_valid = 0;
 
     std::vector<uint32_t> observed(golden.words.size(), 0);
     std::vector<bool> seen(golden.beats(), false);
     bool saw_last = false;
+    std::size_t observed_seq_beats = 0;
 
     for (int cycle = 0; cycle < 200000 && std::find(seen.begin(), seen.end(), false) != seen.end(); ++cycle) {
       tick(dut);
-      if (debug && debug_left > 0 &&
-          (dut.rootp->DM2Quant__DOT__loaduInst__DOT__io_data_out_v_valid_REG ||
-           dut.rootp->DM2Quant__DOT__loaduInst__DOT__io_data_out_ctx_valid_REG ||
-           dut.io_res_valid)) {
-        auto decode_lane = [](const WData* words, int lane) {
+      if (debug && ((cycle < 64) || ((cycle % 2000) == 0))) {
+        auto* root = dut.rootp;
+        std::cerr << "dm2_dbg cycle=" << cycle
+                  << " state=" << static_cast<unsigned>(root->DM2Quant__DOT__dmInst__DOT__state)
+                  << " tileBase=" << static_cast<unsigned>(root->DM2Quant__DOT__dmInst__DOT__tileBase)
+                  << " tileLoadCnt=" << static_cast<unsigned>(root->DM2Quant__DOT__dmInst__DOT__tileLoadCnt)
+                  << " tileCount=" << static_cast<unsigned>(root->DM2Quant__DOT__dmInst__DOT___tileCount_T_1)
+                  << " tileFinal=" << static_cast<unsigned>(root->DM2Quant__DOT__dmInst__DOT__tileFinal)
+                  << " waitctxCnt=" << static_cast<unsigned>(root->DM2Quant__DOT__dmInst__DOT__waitctxCnt)
+                  << " mulCnt=" << static_cast<unsigned>(root->DM2Quant__DOT__dmInst__DOT__mulCnt)
+                  << " v_valid=" << static_cast<unsigned>(dut.io_data_in_v_valid)
+                  << " v_ready=" << static_cast<unsigned>(dut.io_data_in_v_ready)
+                  << " ctx_valid=" << static_cast<unsigned>(dut.io_data_in_ctx_valid)
+                  << " ctx_ready=" << static_cast<unsigned>(dut.io_data_in_ctx_ready)
+                  << " realCtxFire=" << static_cast<unsigned>(root->DM2Quant__DOT__unnamedblk1__DOT__realCtxFire)
+                  << " ctxQValid=" << static_cast<unsigned>(root->DM2Quant__DOT____Vcellinp__dmInst__io_data_in_ctx_valid)
+                  << " vQValid=" << static_cast<unsigned>(root->DM2Quant__DOT____Vcellinp__dmInst__io_data_in_v_valid)
+                  << " ctxPad=" << static_cast<unsigned>(root->DM2Quant__DOT__decodeCtxPadFire)
+                  << " ctxPadWait=" << static_cast<unsigned>(root->DM2Quant__DOT__decodeCtxPadWait)
+                  << " ctxPipeLast=" << static_cast<unsigned>(root->DM2Quant__DOT__ctxQuantValidPipe_27)
+                  << " headDone=" << static_cast<unsigned>(root->DM2Quant__DOT__dmInst__DOT__headOutDone_REG)
+                  << " res_valid=" << static_cast<unsigned>(dut.io_res_valid)
+                  << " res_last=" << static_cast<unsigned>(dut.io_res_last)
+                  << " res_addr=" << static_cast<unsigned>(dut.io_res_addr)
+                  << std::endl;
+      }
+      if (debug && dut.io_res_valid) {
+        const auto decode_lane = [](const uint32_t* words, int lane) {
           const uint32_t word = words[lane / 4];
-          uint32_t byte = (word >> (8 * (lane % 4))) & 0xffU;
+          const uint32_t byte = (word >> (8 * (lane % 4))) & 0xffU;
           return static_cast<int>(static_cast<int8_t>(byte));
         };
-        const auto decode_u8 = [](const WData* words, int lane) {
-          const uint32_t word = words[lane / 4];
-          return static_cast<int>((word >> (8 * (lane % 4))) & 0xffU);
-        };
-        std::cerr << "DM2 cycle"
-                  << " v_valid=" << static_cast<int>(dut.rootp->DM2Quant__DOT__loaduInst__DOT__io_data_out_v_valid_REG)
-                  << " ctx_valid=" << static_cast<int>(dut.rootp->DM2Quant__DOT__loaduInst__DOT__io_data_out_ctx_valid_REG)
-                  << " res_valid=" << static_cast<int>(dut.io_res_valid)
-                  << " loadu_state=" << static_cast<int>(dut.rootp->DM2Quant__DOT__loaduInst__DOT__st_state)
-                  << " loadu_waitctx=" << static_cast<int>(dut.rootp->DM2Quant__DOT__loaduInst__DOT__waitctx_cnt_r)
-                  << " loadu_prefillLoad=" << static_cast<int>(dut.rootp->DM2Quant__DOT__loaduInst__DOT__prefill_load_cnt_r)
-                  << " dm_state=" << static_cast<int>(dut.rootp->DM2Quant__DOT__dmInst__DOT__state)
-                  << " dm_waitctx=" << static_cast<int>(dut.rootp->DM2Quant__DOT__dmInst__DOT__waitctxCnt_r)
-                  << " dm_mul=" << static_cast<int>(dut.rootp->DM2Quant__DOT__dmInst__DOT__mulCnt_r)
-                  << " ctx0=" << decode_u8(dut.rootp->DM2Quant__DOT__dmInst__DOT__ctx, 0)
-                  << " ctx1=" << decode_u8(dut.rootp->DM2Quant__DOT__dmInst__DOT__ctx, 1)
-                  << " v00=" << decode_lane(dut.rootp->DM2Quant__DOT__dmInst__DOT__vBuf_0_r, 0)
-                  << " v10=" << decode_lane(dut.rootp->DM2Quant__DOT__dmInst__DOT__vBuf_1_r, 0);
-        if (dut.io_res_valid) {
-          std::cerr << " out0=" << decode_lane(dut.io_res, 0)
-                    << " gold0=" << decode_lane(golden.beat(dut.io_res_addr), 0)
-                    << " addr=" << static_cast<int>(dut.io_res_addr);
-        }
-        std::cerr << std::endl;
-        --debug_left;
+        std::cerr << "DM2 res"
+                  << " valid=" << static_cast<int>(dut.io_res_valid)
+                  << " last=" << static_cast<int>(dut.io_res_last)
+                  << " addr=" << static_cast<int>(dut.io_res_addr)
+                  << " out0=" << decode_lane(dut.io_res, 0)
+                  << std::endl;
       }
       if (!dut.io_res_valid) {
         continue;
       }
-      const std::size_t addr = dut.io_res_addr;
-      require(addr < golden.beats(), "DM2Quant output addr out of range");
-      copy_words(observed.data() + addr * 16, dut.io_res, 16);
-      seen[addr] = true;
+      if (cfg_single_query) {
+        require(observed_seq_beats < golden.beats(), "DM2Quant emitted too many single-query output beats");
+        copy_words(observed.data() + observed_seq_beats * 16, dut.io_res, 16);
+        seen[observed_seq_beats] = true;
+        ++observed_seq_beats;
+      } else {
+        const std::size_t addr = dut.io_res_addr;
+        require(addr < golden.beats(), "DM2Quant output addr out of range");
+        copy_words(observed.data() + addr * 16, dut.io_res, 16);
+        seen[addr] = true;
+      }
       if (dut.io_res_last) {
         saw_last = true;
       }

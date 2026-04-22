@@ -28,6 +28,8 @@ Usage:
   remote_vcs.sh exec <remote command...>
   remote_vcs.sh validate-9p-fullseq-vcs [args...]
   remote_vcs.sh validate-axi-board-fullseq-vcs [args...]
+  remote_vcs.sh validate-cnn-core-fullseq-vcs [args...]
+  remote_vcs.sh validate-opt-acc-core-fullseq-vcs [args...]
   remote_vcs.sh monitor-9p-fullseq-vcs [interval_seconds]
 EOF
 }
@@ -42,12 +44,19 @@ remote_bash() {
 }
 
 sync_project() {
-  remote_bash "mkdir -p generated verification verification/rtl verification/assert verification/assume verification/cover testbench/vcs scripts/verification verification/cases"
+  remote_bash "mkdir -p generated verification verification/rtl verification/assert verification/assume verification/cover testbench/vcs scripts/verification verification/cases deliverables deliverables/vivado_opt_acc_core_ip deliverables/vivado_opt_acc_core_ip/hdl deliverables/vivado_cnn_core_ip deliverables/vivado_cnn_core_ip/hdl"
 
   rsync -az --delete \
     -e "ssh ${SSH_OPTS[*]}" \
     "${REPO_ROOT}/generated/Top.sv" \
     "${REMOTE_TARGET}:${REMOTE_WORKDIR}/generated/Top.sv"
+
+  if [[ -f "${REPO_ROOT}/generated/Top_vivado.sv" ]]; then
+    rsync -az --delete \
+      -e "ssh ${SSH_OPTS[*]}" \
+      "${REPO_ROOT}/generated/Top_vivado.sv" \
+      "${REMOTE_TARGET}:${REMOTE_WORKDIR}/generated/Top_vivado.sv"
+  fi
 
   rsync -az --delete \
     -e "ssh ${SSH_OPTS[*]}" \
@@ -95,6 +104,20 @@ sync_project() {
     "${REPO_ROOT}/testbench/vcs/" \
     "${REMOTE_TARGET}:${REMOTE_WORKDIR}/testbench/vcs/"
 
+  if [[ -d "${REPO_ROOT}/deliverables/vivado_opt_acc_core_ip/hdl" ]]; then
+    rsync -az --delete \
+      -e "ssh ${SSH_OPTS[*]}" \
+      "${REPO_ROOT}/deliverables/vivado_opt_acc_core_ip/hdl/" \
+      "${REMOTE_TARGET}:${REMOTE_WORKDIR}/deliverables/vivado_opt_acc_core_ip/hdl/"
+  fi
+
+  if [[ -d "${REPO_ROOT}/deliverables/vivado_cnn_core_ip/hdl" ]]; then
+    rsync -az --delete \
+      -e "ssh ${SSH_OPTS[*]}" \
+      "${REPO_ROOT}/deliverables/vivado_cnn_core_ip/hdl/" \
+      "${REMOTE_TARGET}:${REMOTE_WORKDIR}/deliverables/vivado_cnn_core_ip/hdl/"
+  fi
+
   rsync -az --delete \
     -e "ssh ${SSH_OPTS[*]}" \
     "${REPO_ROOT}/scripts/verification/opt125m_e2e.py" \
@@ -111,13 +134,22 @@ sync_project() {
     "${REMOTE_TARGET}:${REMOTE_WORKDIR}/verification/cases/opt125m_stage_full/"
 
   local fullseq_dir
-  for fullseq_dir in "${REPO_ROOT}"/verification/cases/opt125m_9p_fullseq*; do
+  for fullseq_dir in "${REPO_ROOT}"/verification/cases/opt125m_9p_fullseq* \
+                     "${REPO_ROOT}"/verification/cases/pyjm12_alllayers_9p_fullseq \
+                     "${REPO_ROOT}"/verification/cases/pyjm_9p_fullseq; do
     [[ -d "${fullseq_dir}" ]] || continue
     rsync -az --delete \
       -e "ssh ${SSH_OPTS[*]}" \
       "${fullseq_dir}/" \
       "${REMOTE_TARGET}:${REMOTE_WORKDIR}/verification/cases/$(basename "${fullseq_dir}")/"
   done
+
+  if [[ -d "${REPO_ROOT}/verification/cases/pyjm_stage_full" ]]; then
+    rsync -az --delete \
+      -e "ssh ${SSH_OPTS[*]}" \
+      "${REPO_ROOT}/verification/cases/pyjm_stage_full/" \
+      "${REMOTE_TARGET}:${REMOTE_WORKDIR}/verification/cases/pyjm_stage_full/"
+  fi
 }
 
 validate_remote() {
@@ -247,6 +279,12 @@ main() {
       ;;
     validate-axi-board-fullseq-vcs)
       validate_remote "validate-axi-board-fullseq-vcs" "$@"
+      ;;
+    validate-cnn-core-fullseq-vcs)
+      validate_remote "validate-cnn-core-fullseq-vcs" "$@"
+      ;;
+    validate-opt-acc-core-fullseq-vcs)
+      validate_remote "validate-opt-acc-core-fullseq-vcs" "$@"
       ;;
     monitor-9p-fullseq-vcs)
       monitor_fullseq_vcs "$@"

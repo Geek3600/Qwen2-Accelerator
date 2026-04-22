@@ -4,15 +4,16 @@ import chisel3._
 import chisel3.util._
 class VCache extends Module {
 // 流水级5: VCache - 缓存V向量，等待与Softmax结果相乘
+  private val LocalDepth = LOCAL_PRELEN * DATAOUTNUM / DATAINNUM
   val io = IO(new Bundle() {
-    val cfg_seqlen = Input(UInt(log2Up(MAX_PRELEN).W))
+    val cfg_seqlen = Input(UInt(log2Up(LOCAL_PRELEN).W))
     val cfg_prefill = Input(Bool())
     val cfg_valid = Input(Bool())
     val cfg_single_query = Input(Bool())
 
     val data_in_st = Input(Bool())
     val data_in = Input(UInt(DATAINW.W))
-    val data_in_addr = Input(UInt(log2Up(BATCHSIZE * DATAOUTNUM/DATAINNUM).W))
+    val data_in_addr = Input(UInt(log2Up(LocalDepth).W))
     val data_in_valid = Input(Bool())
     val data_in_last = Input(Bool())
     val data_in_ready = Output(Bool())
@@ -26,7 +27,7 @@ class VCache extends Module {
 
   })
   val lsu_inst = Module(new LSU)
-  val mem_inst = Module(new DataMem(BATCHSIZE * DATAOUTNUM/DATAINNUM,DATAINW,3))
+  val mem_inst = Module(new DataMem(LocalDepth, DATAINW, 4))
 
   mem_inst.io.w_st := io.data_in_st
   mem_inst.io.w_last := io.data_in_last

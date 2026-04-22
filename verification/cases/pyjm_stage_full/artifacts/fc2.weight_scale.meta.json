@@ -1,0 +1,6 @@
+{
+  "alias": "weight_scale",
+  "kind": "scalar",
+  "value": 0.0185699462890625,
+  "source_file": "weight/pyjm_layer/pyjm_layer/fc2.json"
+}

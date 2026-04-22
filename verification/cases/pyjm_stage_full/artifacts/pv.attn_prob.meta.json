@@ -1,0 +1,13 @@
+{
+  "alias": "attn_prob",
+  "kind": "tensor",
+  "shape": [
+    12,
+    16,
+    16
+  ],
+  "dtype": "int8",
+  "num_values": 3072,
+  "source_file": "weight/pyjm_layer/pyjm_layer/pv_bmm.json",
+  "binary_file": "artifacts/pv.attn_prob.int8.bin"
+}

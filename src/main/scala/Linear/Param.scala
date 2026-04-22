@@ -6,8 +6,8 @@ object Param {
   val BATCHSIZE = 32
 
   // Prefill/Decode 模式参数
-  val MAX_PREFILL = 8   // Prefill 模式最大 token 数
-  val MAX_SEQLEN = 26   // 最大序列长度
+  val MAX_SEQLEN = 16   // 最大序列长度
+  val MAX_PREFILL = MAX_SEQLEN   // Prefill 模式最大 token 数
 
   val ROW = 12
   val COL = 36

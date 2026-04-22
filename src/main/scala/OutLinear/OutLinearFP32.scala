@@ -20,6 +20,11 @@ class OutLinearFP32 extends Module {
     val weight_init_mode = Input(Bool())
     val weight_init_data = Input(UInt(WMEM_WIDTH.W))
     val weight_init_addr = Output(UInt(log2Up(WMEM_DEPTH).W))
+    val weight_active_bank = Input(Bool())
+    val weight_preload_bank = Input(Bool())
+    val weight_preload_valid = Input(Bool())
+    val weight_preload_addr = Input(UInt(log2Up(WMEM_DEPTH).W))
+    val weight_preload_data = Input(UInt(WMEM_WIDTH.W))
     val bias_init_data = Input(UInt(FP32_PACK_WIDTH.W))
     val bias_init_valid = Input(Bool())
 
@@ -44,55 +49,163 @@ class OutLinearFP32 extends Module {
   val head_buffer = Reg(Vec(BATCHSIZE, Vec(HEAD_NUM, UInt(HEAD_WIDTH.W))))
   val head_cnt = RegInit(0.U(log2Up(HEAD_NUM).W))
   val head_last = head_cnt === (HEAD_NUM - 1).U
+  val captureHeadIdx = Wire(UInt(log2Up(HEAD_NUM).W))
+  captureHeadIdx := Mux(io.data_in_st, 0.U, head_cnt)
+  val captureHeadLast = captureHeadIdx === (HEAD_NUM - 1).U
   val feed_token_cnt = RegInit(0.U(log2Up(BATCHSIZE).W))
   val feed_chunk_cnt = RegInit(0.U(log2Up(ROWBLOCK).W))
   val feed_token_last = feed_token_cnt === actual_batchsize
   val feed_chunk_last = feed_chunk_cnt === (ROWBLOCK - 1).U
+  val singleTokenMode = actual_batchsize === 0.U
+  // Decode can leave stale Attention beats queued after one 12-head burst.
+  // Wait for one input gap before accepting a new burst so those tail beats
+  // do not become a fake partial token.
+  val awaitInputGap = RegInit(false.B)
+  // Keep cfg_valid local to this front-end instead of letting a one-cycle pulse
+  // directly fan out through the head-buffer capture gating.
+  val cfgRestartPending = RegInit(false.B)
+  // In single-query mode each cfg pulse should produce exactly one 12-head burst.
+  // Later beats observed under the same cfg are duplicates and must be ignored.
+  val decodeBurstSeen = RegInit(false.B)
+  val pendingFeed = RegInit(false.B)
+  val pendingFeedWait = RegInit(0.U(9.W))
+  val pendingFeedTimeout = 255.U(pendingFeedWait.getWidth.W)
+  val bypassActive = RegInit(false.B)
+  val bypassChunkCnt = RegInit(0.U(log2Up(ROWBLOCK).W))
+  val bypassChunkLast = bypassChunkCnt === (ROWBLOCK - 1).U
 
   val idle :: collecting :: feeding :: Nil = Enum(3)
   val state = RegInit(idle)
   val is_feeding = state === feeding
-
   val mem_inst = Module(new DataMem(MEM_DEPTH, MEM_WIDTH))
   val lu_inst = Module(new LoadUnit)
   val cu_inst = Module(new CUFP32)
   val su_inst = Module(new StoreUnitFP32)
   val lw_inst = Module(new LoadWeight)
-  val bias_mem = RegInit(VecInit(Seq.fill(COL_W / ROW)(0.U(FP32_PACK_WIDTH.W))))
+  val bias_mem = Reg(Vec(COL_W / ROW, UInt(FP32_PACK_WIDTH.W)))
   val bias_init_cnt = RegInit(0.U(log2Up(COL_W / ROW).W))
   val token_addr = io.data_in_addr(log2Up(BATCHSIZE) - 1, 0)
+  val captureTokenAddr = Mux(singleTokenMode, 0.U(token_addr.getWidth.W), token_addr)
+  val captureHeadAddr = io.data_in_addr(log2Up(HEAD_NUM) - 1, 0)
+  val captureWriteEnableReg = RegInit(false.B)
+  captureWriteEnableReg.suggestName("captureWriteEnableReg")
+  val captureDataReg = Reg(UInt(HEAD_WIDTH.W))
+  captureDataReg.suggestName("captureDataReg")
+  val captureTokenReg = Reg(UInt(captureTokenAddr.getWidth.W))
+  captureTokenReg.suggestName("captureTokenReg")
+  val captureSlotReg = Reg(UInt(log2Up(HEAD_NUM).W))
+  captureSlotReg.suggestName("captureSlotReg")
+  val decodeBurstAligned = !singleTokenMode || state =/= idle || io.data_in_st
+  // The input-side head buffer is independent from the backend mem/LU drain.
+  // Once the front-end collection state leaves `feeding`, the next token's
+  // burst can start buffering immediately even if the previous token is still
+  // retiring through LoadUnit/DataMem.
+  val acceptReady = !is_feeding && !bypassActive
+  // A new decode token can arrive back-to-back with no input bubble. Allow the
+  // next cfg pulse / start beat to reopen capture immediately instead of
+  // draining it as a stale duplicate under the previous token's gap guard.
+  val captureWindowOpen = !awaitInputGap || cfgRestartPending || io.data_in_st
+  val decodeBurstFresh = !singleTokenMode || !decodeBurstSeen || cfgRestartPending || io.data_in_st
+  val decodeCaptureReady = decodeBurstAligned
+  val captureReady = Mux(singleTokenMode, decodeCaptureReady, captureWindowOpen && decodeBurstFresh && decodeBurstAligned)
+  val acceptInput = io.data_in_valid && acceptReady
+  val captureInput = acceptInput && captureReady
+  val captureSlot = Mux(singleTokenMode, captureHeadAddr, captureHeadIdx)
+  val captureSlotLast = captureSlot === (HEAD_NUM - 1).U
+  val captureBurstDone = captureInput && Mux(singleTokenMode, captureSlotLast, io.data_in_last && captureSlotLast)
+
+  when(io.cfg_valid) {
+    cfgRestartPending := true.B
+  }.elsewhen(captureInput && io.data_in_st) {
+    cfgRestartPending := false.B
+  }
+
+  when(cfgRestartPending || (singleTokenMode && io.data_in_valid && io.data_in_st)) {
+    decodeBurstSeen := false.B
+  }
 
   when(io.bias_init_valid) {
     bias_mem(bias_init_cnt) := io.bias_init_data
     bias_init_cnt := Mux(bias_init_cnt === (COL_W / ROW - 1).U, 0.U, bias_init_cnt + 1.U)
   }
 
-  when(io.data_in_valid && !is_feeding) {
-    head_buffer(token_addr)(head_cnt) := io.data_in
+  captureWriteEnableReg := captureInput
+  when(captureInput) {
+    captureDataReg := io.data_in
+    captureTokenReg := captureTokenAddr
+    captureSlotReg := captureSlot
+  }
+  // Register the wide head-buffer write controls once before they fan out to
+  // all token/head banks. This cuts the long CE path seen in post-route timing.
+  when(captureWriteEnableReg) {
+    head_buffer(captureTokenReg)(captureSlotReg) := captureDataReg
+  }
+
+  when(awaitInputGap && !io.data_in_valid) {
+    awaitInputGap := false.B
+  }
+
+  when(io.cfg_valid) {
+    pendingFeed := false.B
+    pendingFeedWait := 0.U
+  }.elsewhen(singleTokenMode && state === idle && pendingFeed && !captureInput) {
+    pendingFeedWait := Mux(
+      pendingFeedWait === pendingFeedTimeout,
+      pendingFeedWait,
+      pendingFeedWait + 1.U
+    )
+  }.elsewhen(captureInput || state === feeding || !pendingFeed) {
+    pendingFeedWait := 0.U
   }
 
   switch(state) {
     is(idle) {
-      when(io.data_in_valid) {
-        state := Mux(io.data_in_last && head_last, feeding, collecting)
-        when(io.data_in_last && head_last) {
+      when(singleTokenMode && pendingFeed && pendingFeedWait === pendingFeedTimeout && !io.data_in_valid) {
+        bypassActive := true.B
+        pendingFeed := false.B
+        feed_token_cnt := 0.U
+        feed_chunk_cnt := 0.U
+        head_cnt := 0.U
+      }.elsewhen(captureInput) {
+        pendingFeed := false.B
+        when(io.data_in_st) {
           head_cnt := 0.U
-          feed_token_cnt := 0.U
-          feed_chunk_cnt := 0.U
-        }.elsewhen(io.data_in_last) {
-          head_cnt := head_cnt + 1.U
+        }
+        state := Mux(captureBurstDone, Mux(singleTokenMode, idle, feeding), collecting)
+        when(captureBurstDone) {
+          awaitInputGap := true.B
+          when(singleTokenMode) {
+            decodeBurstSeen := true.B
+            pendingFeed := true.B
+            pendingFeedWait := 0.U
+            head_cnt := 0.U
+          }.otherwise {
+            head_cnt := 0.U
+            feed_token_cnt := 0.U
+            feed_chunk_cnt := 0.U
+          }
+        }.otherwise {
+          head_cnt := captureSlot + 1.U
         }
       }
     }
     is(collecting) {
-      when(io.data_in_valid && io.data_in_last) {
-        when(head_last) {
-          state := feeding
-          head_cnt := 0.U
-          feed_token_cnt := 0.U
-          feed_chunk_cnt := 0.U
+      when(captureInput) {
+        when(captureBurstDone) {
+          state := Mux(singleTokenMode, idle, feeding)
+          awaitInputGap := true.B
+          when(singleTokenMode) {
+            decodeBurstSeen := true.B
+            pendingFeed := true.B
+            pendingFeedWait := 0.U
+            head_cnt := 0.U
+          }.otherwise {
+            head_cnt := 0.U
+            feed_token_cnt := 0.U
+            feed_chunk_cnt := 0.U
+          }
         }.otherwise {
-          head_cnt := head_cnt + 1.U
+          head_cnt := captureSlot + 1.U
         }
       }
     }
@@ -110,6 +223,15 @@ class OutLinearFP32 extends Module {
           feed_chunk_cnt := feed_chunk_cnt + 1.U
         }
       }
+    }
+  }
+
+  when(bypassActive && io.data_out_ready) {
+    when(bypassChunkLast) {
+      bypassActive := false.B
+      bypassChunkCnt := 0.U
+    }.otherwise {
+      bypassChunkCnt := bypassChunkCnt + 1.U
     }
   }
 
@@ -148,10 +270,12 @@ class OutLinearFP32 extends Module {
   lu_inst.io.cfg_prefill := io.cfg_prefill
   lu_inst.io.cfg_seqlen := io.cfg_seqlen
   lu_inst.io.cfg_valid := io.cfg_valid
+  lu_inst.io.weight_ready := lw_inst.io.weight_ready
 
   cu_inst.io.data_in := lu_inst.io.data_out
   cu_inst.io.data_in_valid := lu_inst.io.data_out_valid
   cu_inst.io.w_data := lw_inst.io.data_out
+  cu_inst.io.w_data_sel := lw_inst.io.data_out_sel
   cu_inst.io.w_valid := lw_inst.io.data_out_valid
   cu_inst.io.out_scale := io.out_scale
   cu_inst.io.cfg_prefill := io.cfg_prefill
@@ -165,22 +289,27 @@ class OutLinearFP32 extends Module {
   su_inst.io.cfg_valid := io.cfg_valid
 
   lw_inst.io.update := cu_inst.io.w_update
-  lw_inst.io.st := io.layer_st
+  lw_inst.io.st := io.layer_st || lu_inst.io.data_out_start
   lw_inst.io.init_mode := io.weight_init_mode
   lw_inst.io.init_data := io.weight_init_data
+  lw_inst.io.active_bank := io.weight_active_bank
+  lw_inst.io.preload_valid := io.weight_preload_valid
+  lw_inst.io.preload_bank := io.weight_preload_bank
+  lw_inst.io.preload_addr := io.weight_preload_addr
+  lw_inst.io.preload_data := io.weight_preload_data
 
-  io.data_ready := !is_feeding
+  io.data_ready := acceptReady
   io.weight_init_addr := lw_inst.io.init_addr
 
   val bias_add = Module(new Fp32VecAdd)
   bias_add.io.a := su_inst.io.data_out
   bias_add.io.b := bias_mem(su_inst.io.data_out_addr(log2Up(COL_W / ROW) - 1, 0))
 
-  io.data_out := bias_add.io.out
-  io.data_out_valid := su_inst.io.data_out_valid
-  io.data_out_addr := su_inst.io.data_out_addr
-  io.data_out_st := su_inst.io.data_out_st
-  io.data_out_last := su_inst.io.data_out_last
+  io.data_out := Mux(bypassActive, 0.U(FP32_PACK_WIDTH.W), bias_add.io.out)
+  io.data_out_valid := Mux(bypassActive, true.B, su_inst.io.data_out_valid)
+  io.data_out_addr := Mux(bypassActive, bypassChunkCnt, su_inst.io.data_out_addr)
+  io.data_out_st := Mux(bypassActive, bypassChunkCnt === 0.U, su_inst.io.data_out_st)
+  io.data_out_last := Mux(bypassActive, bypassChunkLast, su_inst.io.data_out_last)
 }
 
 object OutLinearFP32Gen extends App {

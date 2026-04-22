@@ -2,11 +2,11 @@ package QKVLinear
 
 object Param {
   val DATAW = 8
-  val BATCHSIZE = 32
+  val BATCHSIZE = 16
 
   // Prefill/Decode 模式参数
-  val MAX_PREFILL = 8
-  val MAX_SEQLEN = 26
+  val MAX_SEQLEN = 16
+  val MAX_PREFILL = MAX_SEQLEN
 
   // 计算阵列参数
   val ROW = 12          // 每周期处理12个输入元素

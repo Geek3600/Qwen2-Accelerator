@@ -107,8 +107,9 @@ class DM1 extends Module {
   su_inst.io.data_in := cu_inst.io.data_out
   su_inst.io.data_in_valid := cu_inst.io.data_out_valid
 
-
   io.data_ready := mem_inst.io.w_ready
+  val inputFire = io.data_valid && io.data_ready
+  lu_inst.io.launch := inputFire && io.data_in_st
 
   io.res := su_inst.io.data_out
   io.res_st := lu_inst.io.data_out_start

@@ -1,0 +1,7 @@
+{
+  "board_model": "9p-ddr-only",
+  "source_case_dir": "weight/all_layers",
+  "source_mode": "all_layers_raw",
+  "layer_count": 12,
+  "layer_stride_beats": 200540
+}

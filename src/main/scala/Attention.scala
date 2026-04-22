@@ -1,7 +1,8 @@
 import DM.Param._
 import DM.DM1FP32
 import DM2.DM2Quant
-import DM2.Param.{HEAD_VECNUM => DM2_HEAD_VECNUM}
+import DM2.Param.{HEAD_VECNUM => DM2_HEAD_VECNUM, MEM_DEPTH => DM2_MEM_DEPTH}
+import DM2.QuantParam.CTX_FP32_WIDTH
 import QuantCommon.Precision.FP32_WIDTH
 import QuantCommon.Precision.UINT8_WIDTH
 import ResMEM.VCache
@@ -20,7 +21,7 @@ class Atten extends Module {
   }
 
   class Dm2CtxBeat extends Bundle {
-    val data = UInt((MAX_SEQLEN * FP32_WIDTH).W)
+    val data = UInt(CTX_FP32_WIDTH.W)
     val st = Bool()
     val addr = UInt(log2Up(MEM_DEPTH).W)
     val last = Bool()
@@ -48,6 +49,23 @@ class Atten extends Module {
   val data_last = Input(Bool())
   val data_ready = Output(Bool())
 
+  // 长序列场景下，允许 wrapper/DDR 在不接管整条 Attention 主路径的前提下，
+  // 只替换真正的历史数据源：
+  // 1. DM1 侧的 QK 输入（例如 current-Q + external-history-K）
+  // 2. DM2 侧的 V 输入（external-history-V）
+  val dm1_override_enable = Input(Bool())
+  val dm1_override_data = Input(UInt((2 * LOAD_VECNUM * DATAW).W))
+  val dm1_override_st = Input(Bool())
+  val dm1_override_addr = Input(UInt(log2Up(HEAD_VECNUM / LOAD_VECNUM * BATCHSIZE).W))
+  val dm1_override_valid = Input(Bool())
+  val dm1_override_last = Input(Bool())
+  val dm1_override_ready = Output(Bool())
+
+  val dm2_v_override_enable = Input(Bool())
+  val dm2_v_override_data = Input(UInt((DM2_HEAD_VECNUM * DATAW).W))
+  val dm2_v_override_valid = Input(Bool())
+  val dm2_v_override_ready = Output(Bool())
+
   // DM2 输出: 512-bit (64 elements * 8-bit)
   val res = Output(UInt((DM2_HEAD_VECNUM * DATAW).W))
   val res_st = Output(Bool())
@@ -66,57 +84,85 @@ class Atten extends Module {
   val dm2 = Module(new DM2Quant)           // 流水级6: Ctx·V 点积
   // Single-query decode can burst a full batch window of V vectors before DM2
   // drains them. Keep enough slack to avoid dropping late lbatch entries.
-  val ctxToDm2Q = Module(new Queue(new Dm2CtxBeat, 16))
-  val vToDm2Q = Module(new Queue(new Dm2Beat, 16))
+  // In short-seq full-seq prefill, Softmax can burst a full head's ctx beats
+  // long before DM2 finishes consuming the previous head. 32 entries is
+  // enough for bring-up, but not enough to sustain the intended wavefront.
+  // Keep a larger on-chip queue so ctx backpressure does not immediately
+  // collapse the QKV->Attention pipeline.
+  val ctxToDm2Q = Module(new Queue(new Dm2CtxBeat, 256))
+  // Single-query decode can accumulate more than one token's V beats while DM2
+  // waits on the matching ctx tile. Keep this queue deeper so VCache write-side
+  // banks do not back up and stall the entire Attention input stream.
+  val vToDm2Q = Module(new Queue(new Dm2Beat, 64))
   val input_ready = Wire(Bool())
   val input_fire = io.data_valid && input_ready
+  val dm1InputValid = Mux(io.dm1_override_enable, io.dm1_override_valid, input_fire)
+  val cfgSeqlen = RegInit(0.U(log2Up(MAX_SEQLEN).W))
+  val cfgPrefill = RegInit(false.B)
+  val cfgSingleQuery = RegInit(false.B)
+  val attnRequestActive = RegInit(false.B)
+  val attnHeadDoneCnt = RegInit(0.U(log2Up(SINGLE_QUERY_BATCH).W))
+  // Top 已经把 attention cfg 保持住；这里只在真正接到下一次 attention 请求首拍时才提交，
+  // 避免上游提前切 cfg，把前一批仍在 DM1/Softmax/DM2 里的数据误按新模式解释。
+  val inputRequestStart = input_fire && io.data_in_st && !attnRequestActive
+  val inputHeadDone = input_fire && io.data_last
+  val inputRequestDone = inputHeadDone && attnHeadDoneCnt === (SINGLE_QUERY_BATCH - 1).U
+  when(inputRequestStart) {
+    cfgSeqlen := io.cfg_seqlen
+    cfgPrefill := io.cfg_prefill
+    cfgSingleQuery := io.cfg_single_query
+    attnRequestActive := true.B
+    attnHeadDoneCnt := 0.U
+  }
+  when(inputHeadDone) {
+    attnHeadDoneCnt := Mux(inputRequestDone, 0.U, attnHeadDoneCnt + 1.U)
+    when(inputRequestDone) {
+      attnRequestActive := false.B
+    }
+  }
+  val attnCfgValid = inputRequestStart
+  val attnCfgSeqlen = Mux(attnCfgValid, io.cfg_seqlen, cfgSeqlen)
+  val attnCfgPrefill = Mux(attnCfgValid, io.cfg_prefill, cfgPrefill)
+  val attnCfgSingleQuery = Mux(attnCfgValid, io.cfg_single_query, cfgSingleQuery)
 
   // ========================================
   // DM1 连接 (Q·K 点积)
   // ========================================
-  dm1.io.cfg_seqlen := io.cfg_seqlen
-  dm1.io.cfg_valid := io.cfg_valid
-  dm1.io.cfg_prefill := io.cfg_prefill
-  dm1.io.cfg_single_query := io.cfg_single_query
+  dm1.io.cfg_seqlen := attnCfgSeqlen
+  dm1.io.cfg_valid := attnCfgValid
+  dm1.io.cfg_prefill := attnCfgPrefill
+  dm1.io.cfg_single_query := attnCfgSingleQuery
   dm1.io.out_scale := io.dm1_out_scale
 
-  dm1.io.data_in_st := input_fire && io.data_in_st
-  dm1.io.data_in := io.data_in(2*LOAD_VECNUM * DATAW - 1 , 0) // QK数据
-  dm1.io.data_addr := io.data_addr
-  dm1.io.data_valid := input_fire
-  dm1.io.data_last := input_fire && io.data_last
+  dm1.io.data_in_st := Mux(io.dm1_override_enable, io.dm1_override_st, input_fire && io.data_in_st)
+  dm1.io.data_in := Mux(io.dm1_override_enable, io.dm1_override_data, io.data_in(2*LOAD_VECNUM * DATAW - 1 , 0)) // QK数据
+  dm1.io.data_addr := Mux(io.dm1_override_enable, io.dm1_override_addr, io.data_addr)
+  dm1.io.data_valid := dm1InputValid
+  dm1.io.data_last := Mux(io.dm1_override_enable, io.dm1_override_last, input_fire && io.data_last)
   dm1.io.res_ready := softmax.io.data_ready
+  io.dm1_override_ready := dm1.io.data_ready
 
-  // DM1 的 res_st 来自其内部 LoadUnit 起拍，远早于真实输出写到 Softmax 的时刻。
-  // Softmax 的输入写起拍必须跟 DM1 的真实输出首拍对齐，而 mask/load 的启动应在
-  // 整个 DM1 输出块写完后再开始，才能与 standalone softmax harness 语义一致。
-  val dm1OutStart = dm1.io.res_valid && dm1.io.res_addr === 0.U
-  val dm1OutDone = dm1.io.res_valid && dm1.io.res_last
-  val dm1OutDoneD1 = RegNext(dm1OutDone, false.B)
-  val softmaxNegInf = "hff7fff8b".U(FP32_WIDTH.W)
-  val dm1SoftmaxIn = Wire(Vec(MAX_SEQLEN, UInt(FP32_WIDTH.W)))
-  private val dm1ResVec = dm1.io.res.asTypeOf(Vec(MAX_SEQLEN, UInt(FP32_WIDTH.W)))
-  for (i <- 0 until MAX_SEQLEN) {
-    val maskFuturePrefill = io.cfg_prefill && (i.U > dm1.io.res_addr)
-    val maskFutureDecode = io.cfg_single_query && (i.U > io.cfg_seqlen)
-    dm1SoftmaxIn(i) := Mux(maskFuturePrefill || maskFutureDecode, softmaxNegInf, dm1ResVec(i))
-  }
+  // Single-query replay can hold DM1 output valid while Softmax is busy.
+  // Head-start / done bookkeeping must follow the real DM1->Softmax handshake,
+  // not raw valid, otherwise a stalled beat can re-trigger Softmax mid-row.
+  val dm1OutFire = dm1.io.res_valid && softmax.io.data_ready
+  val dm1OutStart = dm1OutFire && dm1.io.res_st
+  val dm1OutDone = dm1OutFire && dm1.io.res_last
+  // DM1 already marks the first tile of each head with res_st. Once the
+  // trigger is tied to the true DM1->Softmax handshake, the extra
+  // "started" latch only re-introduces head-start races under backpressure.
+  val softmaxHeadStart = attnCfgSingleQuery && dm1OutStart
 
   // ========================================
   // Softmax 连接
   // ========================================
-  softmax.io.cfg_seqlen := io.cfg_seqlen
-  softmax.io.cfg_valid := io.cfg_valid
-  softmax.io.cfg_prefill := io.cfg_prefill
-  softmax.io.cfg_single_query := io.cfg_single_query
-  // standalone softmax harness 是“最后一拍数据写完后的下一拍”再启动 mask 流。
-  // 这里保持同样语义，避免首个输出窗口时 mask 行号超前 1 拍。
-  softmax.io.layer_st := dm1OutDoneD1
-  // DataMem 的 w_st 必须对应 DM1 真实输出首拍，而不是 DM1 内部 LoadUnit 的起拍。
-  softmax.io.data_in_st := dm1OutStart
-  // 验证数据里的 softmax.input 已经把未来不可见位置写成了负无穷近似值。
-  // top 集成这里也保持同样输入语义，避免把 DM1 未覆盖的 0 当成可见 logits。
-  softmax.io.data_in := dm1SoftmaxIn.asUInt
+  softmax.io.cfg_seqlen := attnCfgSeqlen
+  softmax.io.cfg_valid := attnCfgValid
+  softmax.io.cfg_prefill := attnCfgPrefill
+  softmax.io.cfg_single_query := attnCfgSingleQuery
+  softmax.io.layer_st := Mux(attnCfgSingleQuery, softmaxHeadStart, inputRequestStart)
+  softmax.io.data_in_st := Mux(attnCfgSingleQuery, softmaxHeadStart, dm1.io.res_st)
+  softmax.io.data_in := dm1.io.res
   softmax.io.data_addr := dm1.io.res_addr
   softmax.io.data_valid := dm1.io.res_valid
   softmax.io.data_last := dm1.io.res_last
@@ -134,18 +180,18 @@ class Atten extends Module {
   // ========================================
   // VCache 连接 (V向量缓存)
   // ========================================
-  vcache.io.cfg_valid := io.cfg_valid
-  vcache.io.cfg_seqlen := io.cfg_seqlen
-  vcache.io.cfg_prefill := io.cfg_prefill
-  vcache.io.cfg_single_query := io.cfg_single_query
+  vcache.io.cfg_valid := attnCfgValid
+  vcache.io.cfg_seqlen := attnCfgSeqlen
+  vcache.io.cfg_prefill := attnCfgPrefill
+  vcache.io.cfg_single_query := attnCfgSingleQuery
   vcache.io.data_in_st := input_fire && io.data_in_st
   vcache.io.data_in := io.data_in(3 * LOAD_VECNUM * DATAW - 1, 2 * LOAD_VECNUM * DATAW) // V数据
   vcache.io.data_in_addr := io.data_addr
   vcache.io.data_in_valid := input_fire
   vcache.io.data_in_last := input_fire && io.data_last
-  vcache.io.res_ready := vToDm2Q.io.enq.ready
+  vcache.io.res_ready := Mux(io.dm2_v_override_enable, true.B, vToDm2Q.io.enq.ready)
 
-  vToDm2Q.io.enq.valid := vcache.io.res_valid
+  vToDm2Q.io.enq.valid := !io.dm2_v_override_enable && vcache.io.res_valid
   vToDm2Q.io.enq.bits.data := vcache.io.res
   vToDm2Q.io.enq.bits.st := vcache.io.res_st
   vToDm2Q.io.enq.bits.addr := vcache.io.res_addr
@@ -154,10 +200,10 @@ class Atten extends Module {
   // ========================================
   // DM2 连接 (Ctx·V 点积)
   // ========================================
-  dm2.io.cfg_valid := io.cfg_valid
-  dm2.io.cfg_seqlen := io.cfg_seqlen
-  dm2.io.cfg_prefill := io.cfg_prefill
-  dm2.io.cfg_single_query := io.cfg_single_query
+  dm2.io.cfg_valid := attnCfgValid
+  dm2.io.cfg_seqlen := attnCfgSeqlen
+  dm2.io.cfg_prefill := attnCfgPrefill
+  dm2.io.cfg_single_query := attnCfgSingleQuery
   dm2.io.ctx_inv_scale := io.dm2_ctx_inv_scale
   dm2.io.ctx_zero_point := io.dm2_ctx_zero_point
   dm2.io.out_inv_scale := io.dm2_out_inv_scale
@@ -165,24 +211,20 @@ class Atten extends Module {
   // Softmax 结果 -> DM2 ctx 输入
   dm2.io.data_in_ctx_st := ctxToDm2Q.io.deq.valid && ctxToDm2Q.io.deq.bits.st
   dm2.io.data_in_ctx := ctxToDm2Q.io.deq.bits.data
-  dm2.io.data_in_ctx_addr := ctxToDm2Q.io.deq.bits.addr
   dm2.io.data_in_ctx_valid := ctxToDm2Q.io.deq.valid
-  dm2.io.data_in_ctx_last := ctxToDm2Q.io.deq.valid && ctxToDm2Q.io.deq.bits.last
   ctxToDm2Q.io.deq.ready := dm2.io.data_in_ctx_ready
 
   // VCache 结果 -> DM2 v 输入
-  dm2.io.data_in_v_st := vToDm2Q.io.deq.valid && vToDm2Q.io.deq.bits.st
-  dm2.io.data_in_v := vToDm2Q.io.deq.bits.data
-  dm2.io.data_in_v_addr := vToDm2Q.io.deq.bits.addr
-  dm2.io.data_in_v_valid := vToDm2Q.io.deq.valid
-  dm2.io.data_in_v_last := vToDm2Q.io.deq.valid && vToDm2Q.io.deq.bits.last
-  vToDm2Q.io.deq.ready := dm2.io.data_in_v_ready
+  dm2.io.data_in_v := Mux(io.dm2_v_override_enable, io.dm2_v_override_data, vToDm2Q.io.deq.bits.data)
+  dm2.io.data_in_v_valid := Mux(io.dm2_v_override_enable, io.dm2_v_override_valid, vToDm2Q.io.deq.valid)
+  vToDm2Q.io.deq.ready := !io.dm2_v_override_enable && dm2.io.data_in_v_ready
   dm2.io.res_ready := io.res_ready
+  io.dm2_v_override_ready := dm2.io.data_in_v_ready
 
   // ========================================
   // 输出连接
   // ========================================
-  input_ready := vcache.io.data_in_ready && dm1.io.data_ready
+  input_ready := vcache.io.data_in_ready && Mux(io.dm1_override_enable, true.B, dm1.io.data_ready)
   io.data_ready := input_ready
 
   io.res := dm2.io.res

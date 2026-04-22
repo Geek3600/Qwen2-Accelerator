@@ -17,7 +17,6 @@ class SoftmaxFP32 extends Module {
   private val inputWidth = FIXED_INT_WIDTH + inputFrac
   private val expLutWidth = probFrac + 2
   private val probWidth = probFrac + 2
-
   val io = IO(new Bundle {
     val in = Input(Vec(V, UInt(FP32_WIDTH.W)))
     val in_mask = Input(Vec(V, Bool()))

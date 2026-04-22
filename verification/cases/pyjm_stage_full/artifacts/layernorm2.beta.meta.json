@@ -1,0 +1,11 @@
+{
+  "alias": "beta",
+  "kind": "tensor",
+  "shape": [
+    768
+  ],
+  "dtype": "float32",
+  "num_values": 768,
+  "source_file": "weight/pyjm_layer/pyjm_layer/ln_final.json",
+  "binary_file": "artifacts/layernorm2.beta.float32.bin"
+}

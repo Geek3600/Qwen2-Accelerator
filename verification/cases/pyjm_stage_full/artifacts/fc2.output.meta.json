@@ -1,0 +1,13 @@
+{
+  "alias": "output",
+  "kind": "tensor",
+  "shape": [
+    1,
+    16,
+    768
+  ],
+  "dtype": "float32",
+  "num_values": 12288,
+  "source_file": "weight/pyjm_layer/pyjm_layer/fc2.json",
+  "binary_file": "artifacts/fc2.output.float32.bin"
+}

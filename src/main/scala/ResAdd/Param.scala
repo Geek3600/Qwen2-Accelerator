@@ -12,9 +12,9 @@ object Param {
   val DM2_WIDTH = DATAW * DM2_VECNUM  // = 512 bits
 
   // 通用参数
-  val BATCHSIZE = 32
-  val MAX_SEQLEN = 26
-  val MAX_PREFILL = 8
+  val BATCHSIZE = 16
+  val MAX_SEQLEN = 16
+  val MAX_PREFILL = MAX_SEQLEN
 
   // 收集/输出次数
   val COLLECT_NUM = VECTOR / SUBVEC  // = 768 / 12 = 64 (收集原始输入)

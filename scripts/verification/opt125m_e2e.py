@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import struct
 import subprocess
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ DEFAULT_CASE_DIR = REPO_ROOT / "verification" / "cases" / "opt125m_stage_full"
 DEFAULT_WINDOW_ROOT = REPO_ROOT / "verification" / "cases" / "opt125m_stage_windows"
 DEFAULT_9P_FULLSEQ_ROOT = REPO_ROOT / "verification" / "cases" / "opt125m_9p_fullseq"
 GENERATED_TOP = REPO_ROOT / "generated" / "Top.sv"
+GENERATED_TOP_VIVADO = REPO_ROOT / "generated" / "Top_vivado.sv"
 VERILATOR_INCLUDE_DIRS = [
     REPO_ROOT / "verification",
     REPO_ROOT / "verification" / "assert",
@@ -553,6 +555,25 @@ def pack_fp32_rows(rows: np.ndarray, lanes: int) -> np.ndarray:
     return np.asarray(rows, dtype=np.float32).reshape(-1, lanes).view(np.uint32).copy()
 
 
+def pack_tiled_row(row: np.ndarray, lanes: int, *, dtype: np.dtype | None = None) -> np.ndarray:
+    src = np.asarray(row, dtype=dtype)
+    beats = max(1, (src.size + lanes - 1) // lanes)
+    out = np.zeros((beats, lanes), dtype=src.dtype)
+    out.reshape(-1)[: src.size] = src.reshape(-1)
+    return out
+
+
+def pack_single_query_softmax_masks(seq_len: int, beat_count: int) -> np.ndarray:
+    if seq_len + 1 > 29:
+        raise ValueError(
+            f"single-query softmax mask currently only supports seq_len<=28, got seq_len={seq_len}"
+        )
+    mask = (1 << (seq_len + 1)) - 1
+    words = np.zeros((beat_count, 1), dtype=np.uint32)
+    words[:, 0] = np.uint32(mask)
+    return words
+
+
 def pack_weight_matrix(weight_out_in: np.ndarray, *, input_dim: int, output_dim: int) -> np.ndarray:
     weight_t = np.asarray(weight_out_in, dtype=np.int8).reshape(output_dim, input_dim).transpose()
     rowblock = input_dim // LANES
@@ -872,14 +893,208 @@ def build_ddr_image(regions: list[tuple[str, np.ndarray]]) -> tuple[np.ndarray, 
     return image, bases
 
 
-def prepare_9p_fullseq_case(case_dir: Path, out_dir: Path) -> None:
+def load_raw_tensor(path: Path, label: str) -> np.ndarray:
+    return tensor_to_array(path, resolve_entry(path, label=label))
+
+
+def load_raw_scalar(path: Path, label: str) -> float:
+    return float(scalar_to_value(path, resolve_entry(path, label=label)))
+
+
+def is_all_layers_raw_case(case_dir: Path) -> bool:
+    return (case_dir / "layers" / "layer_0").is_dir()
+
+
+def prepare_all_layers_9p_fullseq_case(case_dir: Path, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     artifacts = out_dir / "artifacts"
     artifacts.mkdir(exist_ok=True)
 
-    token_count_full = 912
+    layer_dirs = sorted((case_dir / "layers").glob("layer_*"), key=lambda p: int(p.name.split("_")[-1]))
+    if len(layer_dirs) != 12:
+        raise ValueError(f"expected 12 layer dirs under {case_dir / 'layers'}, got {len(layer_dirs)}")
+
+    ln1_in = load_raw_tensor(layer_dirs[0] / "layernormQ.json", "x")
+    token_count_full = int(ln1_in.shape[1])
+    input_words = pack_fp32_rows(ln1_in, LANES)
+    top_out = load_raw_tensor(layer_dirs[-1] / "res2.json", "residual2")
+
+    ddr_regions: list[tuple[str, np.ndarray]] = [("input", input_words)]
+    layer_scalar_rows: list[np.ndarray] = []
+    layer_stride_beats = 0
+
+    for layer_idx, layer_dir in enumerate(layer_dirs):
+        ln1_path = layer_dir / "layernormQ.json"
+        ln2_path = layer_dir / "final_layernorm.json"
+        q_path = layer_dir / "q.json"
+        k_path = layer_dir / "k.json"
+        v_path = layer_dir / "v.json"
+        qk_path = layer_dir / "qk_bmm.json"
+        pv_path = layer_dir / "pv_bmm.json"
+        out_path = layer_dir / "outproj.json"
+        fc1_path = layer_dir / "fc1.json"
+        fc2_path = layer_dir / "fc2.json"
+
+        ln1_gamma = load_raw_tensor(ln1_path, "weight").reshape(768)
+        ln1_beta = load_raw_tensor(ln1_path, "bias").reshape(768)
+        ln1_out = load_raw_tensor(ln1_path, "ln_output_int8")
+        ln1_inv_scale, ln1_zero_point = infer_layernorm_quant_params(ln1_in, ln1_gamma, ln1_beta, ln1_out)
+
+        ln2_in = load_raw_tensor(ln2_path, "x")
+        ln2_gamma = load_raw_tensor(ln2_path, "weight").reshape(768)
+        ln2_beta = load_raw_tensor(ln2_path, "bias").reshape(768)
+        ln2_out = load_raw_tensor(ln2_path, "ln_output_int8")
+        ln2_inv_scale, ln2_zero_point = infer_layernorm_quant_params(ln2_in, ln2_gamma, ln2_beta, ln2_out)
+
+        q_weight = load_raw_tensor(q_path, "weight").reshape(768, 768)
+        k_weight = load_raw_tensor(k_path, "weight").reshape(768, 768)
+        v_weight = load_raw_tensor(v_path, "weight").reshape(768, 768)
+        q_bias = load_raw_tensor(q_path, "bias").reshape(768)
+        k_bias = load_raw_tensor(k_path, "bias").reshape(768)
+        v_bias = load_raw_tensor(v_path, "bias").reshape(768)
+        qkv_weight = np.concatenate([q_weight, k_weight, v_weight], axis=0)
+        qkv_bias_hw = np.concatenate([q_bias, k_bias, v_bias], axis=0)
+
+        q_weight_scale = np.float32(load_raw_scalar(q_path, "scale1"))
+        k_weight_scale = np.float32(load_raw_scalar(k_path, "scale1"))
+        v_weight_scale = np.float32(load_raw_scalar(v_path, "scale1"))
+        q_bias_scale = np.float32(load_raw_scalar(q_path, "scale2"))
+        k_bias_scale = np.float32(load_raw_scalar(k_path, "scale2"))
+        v_bias_scale = np.float32(load_raw_scalar(v_path, "scale2"))
+
+        out_in = load_raw_tensor(out_path, "x").reshape(token_count_full, 768)
+        out_weight = load_raw_tensor(out_path, "weight").reshape(768, 768)
+        out_bias = load_raw_tensor(out_path, "bias").reshape(768)
+        out_fp = slice_tokens_1bn(load_raw_tensor(out_path, "output"), 0, token_count_full)
+        out_out_scale = infer_ffndown_out_scale(out_in, out_weight, out_bias, out_fp)
+
+        fc1_in = load_raw_tensor(fc1_path, "x").reshape(token_count_full, 768)
+        fc1_weight = load_raw_tensor(fc1_path, "weight").reshape(3072, 768)
+        fc1_bias = load_raw_tensor(fc1_path, "bias").reshape(3072)
+        fc1_weight_scale = np.float32(load_raw_scalar(fc1_path, "scale1"))
+        fc1_bias_scale = np.float32(load_raw_scalar(fc1_path, "scale2"))
+
+        fc2_in = load_raw_tensor(fc2_path, "x").reshape(token_count_full, 3072)
+        fc2_weight = load_raw_tensor(fc2_path, "weight").reshape(768, 3072)
+        fc2_bias = load_raw_tensor(fc2_path, "bias").reshape(768)
+        fc2_out = slice_tokens_1bn(load_raw_tensor(fc2_path, "output"), 0, token_count_full)
+        ffndown_out_scale = infer_ffndown_out_scale(fc2_in, fc2_weight, fc2_bias, fc2_out)
+
+        scalar_words = np.array(
+            [
+                float_to_u32(float(ln1_inv_scale)),
+                np.uint32(int(ln1_zero_point) & 0xFF),
+                float_to_u32(float(q_weight_scale)),
+                float_to_u32(float(k_weight_scale)),
+                float_to_u32(float(v_weight_scale)),
+                float_to_u32(float(q_bias_scale)),
+                float_to_u32(float(k_bias_scale)),
+                float_to_u32(float(v_bias_scale)),
+                float_to_u32(float(load_raw_scalar(qk_path, "scale"))),
+                float_to_u32(127.0),
+                np.uint32(0),
+                float_to_u32(float(load_raw_scalar(pv_path, "scale"))),
+                float_to_u32(float(out_out_scale)),
+                float_to_u32(float(ln2_inv_scale)),
+                np.uint32(int(ln2_zero_point) & 0xFF),
+                float_to_u32(float(fc1_weight_scale)),
+                float_to_u32(float(fc1_bias_scale)),
+                float_to_u32(float(ffndown_out_scale)),
+            ],
+            dtype=np.uint32,
+        )
+        scalar_beats = pack_into_ddr_words(scalar_words)
+        layer_scalar_rows.append(scalar_beats.reshape(-1))
+
+        layer_regions = [
+            (f"layer{layer_idx}_scalars", scalar_beats),
+            (f"layer{layer_idx}_ln1_w", pack_fp32_rows(np.concatenate([ln1_beta.reshape(1, 768), ln1_gamma.reshape(1, 768)]).reshape(2 * 64, 12), 12)),
+            (f"layer{layer_idx}_qkv_w", pack_weight_matrix(qkv_weight, input_dim=768, output_dim=2304)),
+            (f"layer{layer_idx}_qkv_b", pack_int8_rows(qkv_bias_hw.reshape(1, 2304), LANES)),
+            (f"layer{layer_idx}_sm", pack_softmax_mask_rows(26, token_count_full)),
+            (f"layer{layer_idx}_out_w", pack_weight_matrix(out_weight, input_dim=768, output_dim=768)),
+            (f"layer{layer_idx}_out_b", pack_fp32_rows(out_bias.reshape(1, 768), LANES)),
+            (f"layer{layer_idx}_ln2_w", pack_fp32_rows(np.concatenate([ln2_beta.reshape(1, 768), ln2_gamma.reshape(1, 768)]).reshape(2 * 64, 12), 12)),
+            (f"layer{layer_idx}_ffnup_w", pack_weight_matrix(fc1_weight, input_dim=768, output_dim=3072)),
+            (f"layer{layer_idx}_ffnup_b", pack_int8_rows(fc1_bias.reshape(1, 3072), LANES)),
+            (f"layer{layer_idx}_ffndown_w", pack_weight_matrix(fc2_weight, input_dim=3072, output_dim=768)),
+            (f"layer{layer_idx}_ffndown_b", pack_fp32_rows(fc2_bias.reshape(1, 768), LANES)),
+        ]
+        if layer_idx == 0:
+            layer_stride_beats = sum(pack_into_ddr_words(words).shape[0] for _, words in layer_regions)
+        ddr_regions.extend(layer_regions)
+
+    ddr_image, ddr_bases = build_ddr_image(ddr_regions)
+    write_words(artifacts / "ddr_image.u32.bin", ddr_image)
+    write_words(artifacts / "golden.u32.bin", pack_fp32_rows(top_out, LANES))
+    write_words(artifacts / "layer_scalars.u32.bin", np.asarray(layer_scalar_rows, dtype=np.uint32))
+
+    window_cfg = {
+        "cfg_seqlen": token_count_full - 1,
+        "input_beats": token_count_full * 64,
+        "output_beats": token_count_full * 64,
+        "all_layers_mode": 1,
+        "layer_count": len(layer_dirs),
+        "ddr_layers_base_addr": ddr_bases["ddr_layer0_scalars_base_addr"],
+        "ddr_layer_stride_beats": layer_stride_beats,
+        "ln1_out_inv_scale_u32": int(layer_scalar_rows[0][0]),
+        "ln1_out_zero_point_s8": int(layer_scalar_rows[0][1] & 0xFF),
+        "q_out_inv_scale_u32": int(layer_scalar_rows[0][2]),
+        "k_out_inv_scale_u32": int(layer_scalar_rows[0][3]),
+        "v_out_inv_scale_u32": int(layer_scalar_rows[0][4]),
+        "q_bias_scale_u32": int(layer_scalar_rows[0][5]),
+        "k_bias_scale_u32": int(layer_scalar_rows[0][6]),
+        "v_bias_scale_u32": int(layer_scalar_rows[0][7]),
+        "dm1_out_scale_u32": int(layer_scalar_rows[0][8]),
+        "dm2_ctx_inv_scale_u32": int(layer_scalar_rows[0][9]),
+        "dm2_ctx_zero_point_u8": int(layer_scalar_rows[0][10] & 0xFF),
+        "dm2_out_inv_scale_u32": int(layer_scalar_rows[0][11]),
+        "out_out_scale_u32": int(layer_scalar_rows[0][12]),
+        "ln2_out_inv_scale_u32": int(layer_scalar_rows[0][13]),
+        "ln2_out_zero_point_s8": int(layer_scalar_rows[0][14] & 0xFF),
+        "ffnup_out_inv_scale_u32": int(layer_scalar_rows[0][15]),
+        "ffnup_bias_scale_u32": int(layer_scalar_rows[0][16]),
+        "ffndown_out_scale_u32": int(layer_scalar_rows[0][17]),
+    }
+    window_cfg.update(ddr_bases)
+    board_axi_bases = {
+        "axi_c0_window_base_addr": BOARD_AXI_C0_BASE_ADDR,
+        "axi_c1_window_base_addr": BOARD_AXI_C1_BASE_ADDR,
+        "axi_data_bytes": BOARD_AXI_DATA_BYTES,
+        "axi_line_bytes": BOARD_AXI_LINE_BYTES,
+        "axi_input_base_addr": BOARD_AXI_C0_BASE_ADDR + ddr_bases["ddr_input_base_addr"] * BOARD_AXI_LINE_BYTES,
+        "axi_output_base_addr": BOARD_AXI_C0_BASE_ADDR + int(ddr_image.shape[0]) * BOARD_AXI_LINE_BYTES,
+        "axi_output_stride_bytes": BOARD_AXI_LINE_BYTES,
+    }
+    window_cfg.update(board_axi_bases)
+    write_cfg(out_dir / "window.cfg", window_cfg)
+
+    summary = {
+        "board_model": "9p-ddr-only",
+        "source_case_dir": str(case_dir),
+        "source_mode": "all_layers_raw",
+        "layer_count": len(layer_dirs),
+        "layer_stride_beats": layer_stride_beats,
+    }
+    (out_dir / "case.json").write_text(json.dumps(summary, indent=2))
+
+
+def prepare_9p_fullseq_case(case_dir: Path, out_dir: Path) -> None:
+    if is_all_layers_raw_case(case_dir):
+        prepare_all_layers_9p_fullseq_case(case_dir, out_dir)
+        return
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = out_dir / "artifacts"
+    artifacts.mkdir(exist_ok=True)
 
     ln1_in = load_artifact(case_dir, "layernorm1", "input").array
+    if ln1_in.ndim == 3:
+        token_count_full = int(ln1_in.shape[1])
+    elif ln1_in.ndim == 2:
+        token_count_full = int(ln1_in.shape[0])
+    else:
+        raise ValueError(f"unexpected layernorm1 input shape: {ln1_in.shape}")
     ln1_gamma = load_artifact(case_dir, "layernorm1", "gamma").array.reshape(768)
     ln1_beta = load_artifact(case_dir, "layernorm1", "beta").array.reshape(768)
     ln1_out = load_artifact(case_dir, "layernorm1", "output").array
@@ -939,7 +1154,13 @@ def prepare_9p_fullseq_case(case_dir: Path, out_dir: Path) -> None:
         ),
         ("qkv_w", pack_weight_matrix(qkv_weight, input_dim=768, output_dim=2304)),
         ("qkv_b", pack_int8_rows(qkv_bias_hw.reshape(1, 2304), LANES)),
-        ("sm", pack_softmax_mask_rows(26, 26)),
+        (
+            "sm",
+            pack_softmax_mask_rows(
+                26 if token_count_full > 26 else token_count_full,
+                26 if token_count_full > 26 else token_count_full,
+            ),
+        ),
         ("out_w", pack_weight_matrix(out_weight, input_dim=768, output_dim=768)),
         ("out_b", pack_fp32_rows(out_bias.reshape(1, 768), LANES)),
         (
@@ -1191,6 +1412,15 @@ def prepare_qkv_window(
     write_words(artifacts / "weight_init.u32.bin", pack_weight_matrix(combined_weight, input_dim=768, output_dim=2304))
     write_words(artifacts / "bias_init.u32.bin", pack_int8_rows(combined_bias_hw.reshape(1, 2304), LANES))
     write_words(artifacts / "golden.u32.bin", pack_qkv_output_beats(q_out, k_out, v_out))
+    q_rows = q_out.reshape(-1, 768)
+    k_rows = k_out.reshape(-1, 768)
+    v_rows = v_out.reshape(-1, 768)
+    write_words(artifacts / "q_output_rows.u32.bin", pack_int8_rows(q_rows, LANES))
+    write_words(artifacts / "k_output_rows.u32.bin", pack_int8_rows(k_rows, LANES))
+    write_words(artifacts / "v_output_rows.u32.bin", pack_int8_rows(v_rows, LANES))
+    write_words(artifacts / "qkv_q_chunk0.u32.bin", pack_int8_rows(q_rows[:, :12], LANES))
+    write_words(artifacts / "qkv_k_chunk0.u32.bin", pack_int8_rows(k_rows[:, :12], LANES))
+    write_words(artifacts / "qkv_v_chunk0.u32.bin", pack_int8_rows(v_rows[:, :12], LANES))
 
     manifest = {
         "stage": "qkv_proj",
@@ -1221,22 +1451,39 @@ def prepare_softmax_window(
     head_idx: int,
     out_dir: Path,
 ) -> None:
-    if token_start != 0:
-        raise ValueError("softmax validation currently only supports token_start=0 prefix windows")
-
     softmax_in = load_artifact(case_dir, "softmax", "input").array
     softmax_out = load_artifact(case_dir, "softmax", "output").array
     if not (0 <= head_idx < softmax_in.shape[0]):
         raise ValueError(f"head_idx out of range: {head_idx}")
-
-    rows_to_feed = 26
-    inp = np.array(softmax_in[head_idx, :rows_to_feed, :26], dtype=np.float32, copy=True)
-    golden = np.array(softmax_out[head_idx, :token_count, :26], dtype=np.float32, copy=True)
+    if token_start == 0:
+        if token_count > 26:
+            raise ValueError(
+                "prefix softmax validation currently only supports token_count<=26; "
+                "use token_start>0, token_count=1 for single-query multi-tile rows"
+            )
+        rows_to_feed = 26
+        inp = np.array(softmax_in[head_idx, :rows_to_feed, :26], dtype=np.float32, copy=True)
+        golden = np.array(softmax_out[head_idx, :token_count, :26], dtype=np.float32, copy=True)
+        masks = pack_softmax_mask_rows(rows_to_feed, 26)
+        cfg_seqlen = token_count - 1
+        cfg_single_query = 0
+    else:
+        if token_count != 1:
+            raise ValueError("single-query softmax validation currently requires token_count=1")
+        seq_len = token_start + 1
+        row_in = np.array(softmax_in[head_idx, token_start, :seq_len], dtype=np.float32, copy=True)
+        row_out = np.array(softmax_out[head_idx, token_start, :seq_len], dtype=np.float32, copy=True)
+        inp = pack_tiled_row(row_in, 26, dtype=np.float32)
+        golden = pack_tiled_row(row_out, 26, dtype=np.float32)
+        masks = pack_single_query_softmax_masks(token_start, inp.shape[0])
+        rows_to_feed = inp.shape[0]
+        cfg_seqlen = token_start
+        cfg_single_query = 1
 
     artifacts = out_dir / "artifacts"
     artifacts.mkdir(parents=True, exist_ok=True)
     write_words(artifacts / "data_in.u32.bin", pack_fp32_rows(inp, 26))
-    write_words(artifacts / "masks.u32.bin", pack_softmax_mask_rows(rows_to_feed, 26))
+    write_words(artifacts / "masks.u32.bin", masks)
     write_words(artifacts / "golden.u32.bin", pack_fp32_rows(golden, 26))
 
     manifest = {
@@ -1246,10 +1493,12 @@ def prepare_softmax_window(
         "token_start": token_start,
         "token_count": token_count,
         "head_idx": head_idx,
-        "cfg_seqlen": token_count - 1,
+        "cfg_seqlen": cfg_seqlen,
+        "cfg_prefill": 0,
+        "cfg_single_query": cfg_single_query,
         "input_beats": rows_to_feed,
         "mask_beats": rows_to_feed,
-        "output_beats": token_count,
+        "output_beats": golden.shape[0],
     }
     (out_dir / "window.json").write_text(json.dumps(manifest, indent=2))
     write_cfg(out_dir / "window.cfg", manifest)
@@ -1262,19 +1511,34 @@ def prepare_pv_window(
     head_idx: int,
     out_dir: Path,
 ) -> None:
-    if token_start != 0:
-        raise ValueError("DM2 validation currently only supports token_start=0 prefix windows")
-
     attn_prob = load_artifact(case_dir, "pv", "attn_prob").array
+    softmax_out = load_artifact(case_dir, "softmax", "output").array
     value_states = load_artifact(case_dir, "pv", "value_states").array
     output = load_artifact(case_dir, "pv", "output").array
     if not (0 <= head_idx < attn_prob.shape[0]):
         raise ValueError(f"head_idx out of range: {head_idx}")
-
-    ctx = np.zeros((token_count, 26), dtype=np.float32)
-    ctx[:, :token_count] = np.asarray(attn_prob[head_idx, :token_count, :token_count], dtype=np.float32)
-    v = np.array(value_states[head_idx, :, :token_count].transpose(1, 0), dtype=np.int8, copy=True)
-    golden = np.array(output[head_idx, :token_count, :], dtype=np.int8, copy=True)
+    if token_start == 0:
+        if token_count > 26:
+            raise ValueError(
+                "prefix DM2 validation currently only supports token_count<=26; "
+                "use token_start>0, token_count=1 for single-query multi-tile rows"
+            )
+        ctx = np.zeros((token_count, 26), dtype=np.float32)
+        ctx[:, :token_count] = np.asarray(attn_prob[head_idx, :token_count, :token_count], dtype=np.float32)
+        v = np.array(value_states[head_idx, :, :token_count].transpose(1, 0), dtype=np.int8, copy=True)
+        golden = np.array(output[head_idx, :token_count, :], dtype=np.int8, copy=True)
+        cfg_seqlen = token_count - 1
+        cfg_single_query = 0
+    else:
+        if token_count != 1:
+            raise ValueError("single-query DM2 validation currently requires token_count=1")
+        seq_len = token_start + 1
+        ctx_row = np.array(softmax_out[head_idx, token_start, :seq_len], dtype=np.float32, copy=True)
+        ctx = pack_tiled_row(ctx_row, 26, dtype=np.float32)
+        v = np.array(value_states[head_idx, :, :seq_len].transpose(1, 0), dtype=np.int8, copy=True)
+        golden = np.array(output[head_idx, token_start : token_start + 1, :], dtype=np.int8, copy=True)
+        cfg_seqlen = token_start
+        cfg_single_query = 1
 
     artifacts = out_dir / "artifacts"
     artifacts.mkdir(parents=True, exist_ok=True)
@@ -1289,10 +1553,12 @@ def prepare_pv_window(
         "token_start": token_start,
         "token_count": token_count,
         "head_idx": head_idx,
-        "cfg_seqlen": token_count - 1,
-        "ctx_beats": token_count,
-        "v_beats": token_count,
-        "output_beats": token_count,
+        "cfg_seqlen": cfg_seqlen,
+        "cfg_prefill": 0,
+        "cfg_single_query": cfg_single_query,
+        "ctx_beats": ctx.shape[0],
+        "v_beats": v.shape[0],
+        "output_beats": golden.shape[0],
         "ctx_inv_scale_u32": float_to_u32(1.0),
         "ctx_zero_point_u8": 0,
         "out_inv_scale_u32": float_to_u32(load_scalar(case_dir, "pv", "scale")),
@@ -1709,6 +1975,19 @@ def build_verilated_binary(
     return binary_path
 
 
+def sanitize_generated_top_for_vcs(top_path: Path) -> None:
+    text = top_path.read_text()
+    filtered = []
+    changed = False
+    for line in text.splitlines(True):
+        if '`include "layers-' in line and 'Verification' in line:
+            changed = True
+            continue
+        filtered.append(line)
+    if changed:
+        top_path.write_text("".join(filtered))
+
+
 def build_vcs_binary(
     *,
     vcs_cmd: list[str],
@@ -1725,7 +2004,8 @@ def build_vcs_binary(
         return binary_path
 
     jobs = resolve_build_jobs(build_jobs)
-    run_cmd([*vcs_cmd, "-j", str(jobs)])
+    extra_args = shlex.split(os.getenv("VCS_EXTRA_ARGS", ""))
+    run_cmd([*vcs_cmd, *extra_args, "-j", str(jobs)])
     return binary_path
 
 
@@ -1908,6 +2188,7 @@ def validate_9p_fullseq_vcs(
     skip_build: bool,
     skip_prepare: bool,
 ) -> None:
+    sanitize_generated_top_for_vcs(GENERATED_TOP)
     if not skip_prepare:
         prepare_9p_fullseq_case(case_dir=case_dir, out_dir=out_dir)
     wrapper = REPO_ROOT / "verification" / "rtl" / "NinePSystemTop.sv"
@@ -1954,6 +2235,7 @@ def validate_axi_board_fullseq_vcs(
     skip_build: bool,
     skip_prepare: bool,
 ) -> None:
+    sanitize_generated_top_for_vcs(GENERATED_TOP)
     if not skip_prepare:
         prepare_9p_fullseq_case(case_dir=case_dir, out_dir=out_dir)
     wrapper = REPO_ROOT / "verification" / "rtl" / "AxiBoardSystemTop.sv"
@@ -2012,6 +2294,107 @@ def validate_axi_board_fullseq_vcs(
         str(build_dir / "compile.log"),
     ]
     binary_path = build_vcs_binary(
+        vcs_cmd=vcs_cmd,
+        build_dir=build_dir,
+        build_jobs=build_jobs,
+        skip_build=skip_build,
+    )
+    run_cmd(
+        ["./simv", f"+window_dir={out_dir.resolve()}", "-l", "run.log"],
+        cwd=build_dir,
+    )
+
+
+def validate_cnn_core_fullseq_vcs(
+    *,
+    case_dir: Path,
+    out_dir: Path,
+    build_root: Path,
+    build_jobs: int | None,
+    skip_build: bool,
+    skip_prepare: bool,
+) -> None:
+    sanitize_generated_top_for_vcs(GENERATED_TOP)
+    if not skip_prepare:
+        prepare_9p_fullseq_case(case_dir=case_dir, out_dir=out_dir)
+    wrapper = REPO_ROOT / "verification" / "rtl" / "cnn_core.sv"
+    harness = REPO_ROOT / "testbench" / "vcs" / "cnn_core_tb.sv"
+    build_dir = build_root / "fullseq"
+    build_dir.mkdir(parents=True, exist_ok=True)
+
+    vcs_bin = os.getenv("VCS_BIN", "vcs")
+    vcs_cmd = [
+        vcs_bin,
+        "-full64",
+        "-sverilog",
+        "-timescale=1ns/1ps",
+        "+libext+.v+.sv",
+        *[f"+incdir+{path}" for path in VCS_INCLUDE_DIRS],
+        str(GENERATED_TOP),
+        str(wrapper),
+        str(harness),
+        "-top",
+        "cnn_core_tb",
+        "-Mdir=" + str(build_dir / "csrc"),
+        "-o",
+        str(build_dir / "simv"),
+        "-l",
+        str(build_dir / "compile.log"),
+    ]
+    build_vcs_binary(
+        vcs_cmd=vcs_cmd,
+        build_dir=build_dir,
+        build_jobs=build_jobs,
+        skip_build=skip_build,
+    )
+    run_cmd(
+        ["./simv", f"+window_dir={out_dir.resolve()}", "-l", "run.log"],
+        cwd=build_dir,
+    )
+
+
+def validate_opt_acc_core_fullseq_vcs(
+    *,
+    case_dir: Path,
+    out_dir: Path,
+    build_root: Path,
+    build_jobs: int | None,
+    skip_build: bool,
+    skip_prepare: bool,
+) -> None:
+    # VCS validation must use the simulation backend. Top_vivado.sv is reserved for
+    # synthesis and may elaborate Vivado floating-point blackboxes that do not have
+    # software simulation models in this flow.
+    top_rtl = GENERATED_TOP
+    sanitize_generated_top_for_vcs(top_rtl)
+    if not skip_prepare:
+        prepare_9p_fullseq_case(case_dir=case_dir, out_dir=out_dir)
+    wrapper = REPO_ROOT / "deliverables" / "vivado_opt_acc_core_ip" / "hdl" / "opt_acc_core.sv"
+    harness = REPO_ROOT / "testbench" / "vcs" / "cnn_core_tb.sv"
+    build_dir = build_root / "fullseq"
+    build_dir.mkdir(parents=True, exist_ok=True)
+
+    vcs_bin = os.getenv("VCS_BIN", "vcs")
+    vcs_cmd = [
+        vcs_bin,
+        "-full64",
+        "-sverilog",
+        "-timescale=1ns/1ps",
+        "+libext+.v+.sv",
+        "+define+USE_OPT_ACC_CORE",
+        *[f"+incdir+{path}" for path in VCS_INCLUDE_DIRS],
+        str(top_rtl),
+        str(wrapper),
+        str(harness),
+        "-top",
+        "cnn_core_tb",
+        "-Mdir=" + str(build_dir / "csrc"),
+        "-o",
+        str(build_dir / "simv"),
+        "-l",
+        str(build_dir / "compile.log"),
+    ]
+    build_vcs_binary(
         vcs_cmd=vcs_cmd,
         build_dir=build_dir,
         build_jobs=build_jobs,
@@ -2109,6 +2492,28 @@ def build_parser() -> argparse.ArgumentParser:
     fullseq_vcs_validate_p.add_argument("--skip-build", action="store_true")
     fullseq_vcs_validate_p.add_argument("--skip-prepare", action="store_true")
 
+    cnn_core_fullseq_vcs_validate_p = sub.add_parser(
+        "validate-cnn-core-fullseq-vcs",
+        help="prepare the full 912-token case and validate it with the direct cnn_core-compatible 512-bit AXI VCS testbench",
+    )
+    cnn_core_fullseq_vcs_validate_p.add_argument("--case-dir", type=Path, default=DEFAULT_CASE_DIR)
+    cnn_core_fullseq_vcs_validate_p.add_argument("--out-dir", type=Path, default=DEFAULT_9P_FULLSEQ_ROOT)
+    cnn_core_fullseq_vcs_validate_p.add_argument("--build-root", type=Path, default=REPO_ROOT / "obj_dir" / "cnn_core_vcs_validation")
+    cnn_core_fullseq_vcs_validate_p.add_argument("--build-jobs", type=int)
+    cnn_core_fullseq_vcs_validate_p.add_argument("--skip-build", action="store_true")
+    cnn_core_fullseq_vcs_validate_p.add_argument("--skip-prepare", action="store_true")
+
+    opt_acc_core_fullseq_vcs_validate_p = sub.add_parser(
+        "validate-opt-acc-core-fullseq-vcs",
+        help="prepare the full 912-token case and validate it with the direct opt_acc_core-compatible 512-bit AXI VCS testbench",
+    )
+    opt_acc_core_fullseq_vcs_validate_p.add_argument("--case-dir", type=Path, default=DEFAULT_CASE_DIR)
+    opt_acc_core_fullseq_vcs_validate_p.add_argument("--out-dir", type=Path, default=DEFAULT_9P_FULLSEQ_ROOT)
+    opt_acc_core_fullseq_vcs_validate_p.add_argument("--build-root", type=Path, default=REPO_ROOT / "obj_dir" / "opt_acc_core_vcs_validation")
+    opt_acc_core_fullseq_vcs_validate_p.add_argument("--build-jobs", type=int)
+    opt_acc_core_fullseq_vcs_validate_p.add_argument("--skip-build", action="store_true")
+    opt_acc_core_fullseq_vcs_validate_p.add_argument("--skip-prepare", action="store_true")
+
     axi_board_fullseq_vcs_validate_p = sub.add_parser(
         "validate-axi-board-fullseq-vcs",
         help="prepare the full 912-token case and validate it with a board-style AXI DDR VCS testbench",
@@ -2204,6 +2609,24 @@ def main() -> None:
         )
     elif args.cmd == "validate-axi-board-fullseq-vcs":
         validate_axi_board_fullseq_vcs(
+            case_dir=args.case_dir,
+            out_dir=args.out_dir,
+            build_root=args.build_root,
+            build_jobs=args.build_jobs,
+            skip_build=args.skip_build,
+            skip_prepare=args.skip_prepare,
+        )
+    elif args.cmd == "validate-cnn-core-fullseq-vcs":
+        validate_cnn_core_fullseq_vcs(
+            case_dir=args.case_dir,
+            out_dir=args.out_dir,
+            build_root=args.build_root,
+            build_jobs=args.build_jobs,
+            skip_build=args.skip_build,
+            skip_prepare=args.skip_prepare,
+        )
+    elif args.cmd == "validate-opt-acc-core-fullseq-vcs":
+        validate_opt_acc_core_fullseq_vcs(
             case_dir=args.case_dir,
             out_dir=args.out_dir,
             build_root=args.build_root,

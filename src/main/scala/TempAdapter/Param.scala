@@ -18,9 +18,9 @@ object Param {
   val EXTRACT_DIM = HEAD_DIM * 3  // = 192 (Q+K+V)
 
   // 通用参数
-  val BATCHSIZE = 32
-  val MAX_SEQLEN = 26
-  val MAX_PREFILL = 8
+  val BATCHSIZE = 16
+  val MAX_SEQLEN = 16
+  val MAX_PREFILL = MAX_SEQLEN
 
   // 收集次数
   val COLLECT_NUM = LN_VECTOR / LN_SUBVEC  // = 768 / 12 = 64

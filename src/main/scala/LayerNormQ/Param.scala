@@ -14,5 +14,5 @@ object Param {
   val INT_PACK_WIDTH = INT8_PACK_WIDTH
 
   val MEM_DEPTH = 2048
-  val BATCHSIZE = 32
+  val BATCHSIZE = 16
 }

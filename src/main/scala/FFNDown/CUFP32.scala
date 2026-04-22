@@ -1,6 +1,7 @@
 package FFNDown
 
 import FFNDown.Param._
+import QuantCommon.DspHints
 import QuantCommon.Int32VecToFp32
 import QuantCommon.Precision._
 import chisel3._
@@ -36,6 +37,40 @@ class SignedAddTree32(val num: Int) extends Module {
   io.out := recTree(io.ins)
 }
 
+class SignedMacChain32(val num: Int) extends Module {
+  val io = IO(new Bundle() {
+    val in0 = Input(Vec(num, SInt(DATAW.W)))
+    val in1 = Input(Vec(num, SInt(DATAW.W)))
+    val out = Output(SInt(INT32_WIDTH.W))
+  })
+
+  DspHints.preferDsp(this)
+  val acc = Reg(Vec(num, SInt(INT32_WIDTH.W)))
+  for (i <- 0 until num) {
+    DspHints.preferDsp(acc(i))
+  }
+  val alignedIn0 = Wire(Vec(num, SInt(DATAW.W)))
+  val alignedIn1 = Wire(Vec(num, SInt(DATAW.W)))
+  for (i <- 0 until num) {
+    if (i == 0) {
+      alignedIn0(i) := io.in0(i)
+      alignedIn1(i) := io.in1(i)
+    } else {
+      alignedIn0(i) := ShiftRegister(io.in0(i), i)
+      alignedIn1(i) := ShiftRegister(io.in1(i), i)
+    }
+  }
+
+  // Keep the MAC chain unreset so Vivado can map it onto DSP cascade logic.
+  acc(0) := (alignedIn0(0) * alignedIn1(0)).asSInt
+  for (i <- 1 until num) {
+    val stageSum = Wire(SInt(INT32_WIDTH.W))
+    stageSum := (acc(i - 1) +& (alignedIn0(i) * alignedIn1(i)).asSInt).asSInt
+    acc(i) := stageSum
+  }
+  io.out := acc(num - 1)
+}
+
 class CUFP32 extends Module {
   val io = IO(new Bundle() {
     val data_in = Input(UInt(MEM_WIDTH.W))
@@ -44,7 +79,8 @@ class CUFP32 extends Module {
     val data_out_valid = Output(Bool())
 
     val w_update = Output(Bool())
-    val w_data = Input(UInt(WMEM_WIDTH.W))
+    val w_data = Input(Vec(ROW, UInt(WMEM_WIDTH.W)))
+    val w_data_sel = Input(Bool())
     val w_valid = Input(Bool())
 
     val out_scale = Input(UInt(FP32_WIDTH.W))
@@ -57,33 +93,27 @@ class CUFP32 extends Module {
   val is_prefill = RegEnable(io.cfg_prefill, false.B, io.cfg_valid)
   val seqlen = RegEnable(io.cfg_seqlen, 0.U, io.cfg_valid)
   val actual_batchsize = Mux(is_prefill, seqlen, (BATCHSIZE - 1).U)
+  val colFanoutGroupSize = 6
+  val colFanoutGroups = (COL + colFanoutGroupSize - 1) / colFanoutGroupSize
 
-  val weight_w_sel = RegInit(false.B)
-  val weight_w_cnt = RegInit(0.U(log2Up(ROW).W))
-  val weight_w_last = weight_w_cnt === (ROW - 1).U
-  when(io.w_valid) {
-    weight_w_cnt := Mux(weight_w_last, 0.U, weight_w_cnt + 1.U)
-    when(weight_w_last) {
-      weight_w_sel := ~weight_w_sel
-    }
+  val w0 = Reg(Vec(ROW, UInt(WMEM_WIDTH.W)))
+  val w1 = Reg(Vec(ROW, UInt(WMEM_WIDTH.W)))
+  when(io.w_valid && !io.w_data_sel) {
+    w0 := io.w_data
   }
-
-  val w0 = Wire(Vec(ROW, UInt(WMEM_WIDTH.W)))
-  val w1 = Wire(Vec(ROW, UInt(WMEM_WIDTH.W)))
-  w0(0) := RegEnable(io.w_data, io.w_valid && !weight_w_sel)
-  w1(0) := RegEnable(io.w_data, io.w_valid && weight_w_sel)
-
-  for (i <- 1 until ROW) {
-    w0(i) := RegEnable(w0(i - 1), io.w_valid && !weight_w_sel)
-    w1(i) := RegEnable(w1(i - 1), io.w_valid && weight_w_sel)
+  when(io.w_valid && io.w_data_sel) {
+    w1 := io.w_data
   }
 
   val weight_r_sel = RegInit(false.B)
   val weight = Wire(Vec(ROW, Vec(COL, SInt(DATAW.W))))
   for (i <- 0 until ROW) {
-    val srcIdx = (ROW - 1) - i
     for (j <- 0 until COL) {
-      weight(i)(j) := Mux(weight_r_sel, w1(srcIdx)((j + 1) * DATAW - 1, j * DATAW), w0(srcIdx)((j + 1) * DATAW - 1, j * DATAW)).asSInt
+      weight(i)(j) := Mux(
+        weight_r_sel,
+        w1(i)((j + 1) * DATAW - 1, j * DATAW),
+        w0(i)((j + 1) * DATAW - 1, j * DATAW)
+      ).asSInt
     }
   }
 
@@ -99,40 +129,42 @@ class CUFP32 extends Module {
   val indata_pipreg = Module(new PipReg(input_delay, MEM_WIDTH))
   indata_pipreg.io.in := io.data_in
 
-  val batchsizelast_pipreg = Module(new PipReg(input_delay, 1))
-  batchsizelast_pipreg.io.in := (batchsize_last && io.data_in_valid).asUInt
+  val batchsizeFirst = batchsize_cnt === 0.U
+  val weightUpdateReg = RegNext(io.data_in_valid && batchsizeFirst, false.B)
+  io.w_update := weightUpdateReg
 
-  when(batchsizelast_pipreg.io.out.asBool) {
+  val weightSwitchReg = ShiftRegister(io.data_in_valid && batchsize_last, input_delay, false.B)
+  when(weightSwitchReg) {
     weight_r_sel := ~weight_r_sel
   }
-  io.w_update := batchsizelast_pipreg.io.out.asBool
 
-  val mul_list = List.fill(ROW)(List.fill(COL)(Module(new SignedMultiplierInt8)))
-  for (i <- 0 until ROW) {
-    for (j <- 0 until COL) {
-      mul_list(i)(j).io.in0 := indata_pipreg.io.out(DATAW * (i + 1) - 1, DATAW * i).asSInt
-      mul_list(i)(j).io.in1 := weight(i)(j)
-    }
+  val inputLaneReplicas = Seq.tabulate(ROW, colFanoutGroups) { (i, _) =>
+    val laneReplica = Wire(SInt(DATAW.W))
+    laneReplica := indata_pipreg.io.out(DATAW * (i + 1) - 1, DATAW * i).asSInt
+    dontTouch(laneReplica)
+    laneReplica
   }
-  val mul_delay = 1
 
-  val addTreeList = List.fill(COL)(Module(new SignedAddTree32(ROW)))
+  val macChainList = List.fill(COL)(Module(new SignedMacChain32(ROW)))
   for (j <- 0 until COL) {
     for (i <- 0 until ROW) {
-      addTreeList(j).io.ins(i) := mul_list(i)(j).io.out
+      macChainList(j).io.in0(i) := inputLaneReplicas(i)(j / colFanoutGroupSize)
+      macChainList(j).io.in1(i) := weight(i)(j)
     }
   }
-  val add_delay = log2Up(ROW)
+  val macLatency = ROW
 
-  val psums0 = RegInit(VecInit(Seq.fill(BATCHSIZE)(VecInit(Seq.fill(COL)(0.S(INT32_WIDTH.W))))))
-  val psums1 = RegInit(VecInit(Seq.fill(BATCHSIZE)(VecInit(Seq.fill(COL)(0.S(INT32_WIDTH.W))))))
+  // These partial sums are fully overwritten on the first block of each token
+  // before they are observed, so datapath reset only hurts packing density.
+  val psums0 = Reg(Vec(BATCHSIZE, Vec(COL, SInt(INT32_WIDTH.W))))
+  val psums1 = Reg(Vec(BATCHSIZE, Vec(COL, SInt(INT32_WIDTH.W))))
 
   val block_first = block_cnt === 0.U
   val psum_last = block_last && batchsize_last
-  val block_first_pipreg = Module(new PipReg(input_delay + mul_delay + add_delay, 1))
-  val cnt_batchsize_pipreg = Module(new PipReg(input_delay + mul_delay + add_delay, batchsize_cnt.getWidth))
-  val psum_valid_pipreg = Module(new PipReg(input_delay + mul_delay + add_delay, 1))
-  val psum_last_pipreg = Module(new PipReg(input_delay + mul_delay + add_delay, 1))
+  val block_first_pipreg = Module(new PipReg(input_delay + macLatency, 1))
+  val cnt_batchsize_pipreg = Module(new PipReg(input_delay + macLatency, batchsize_cnt.getWidth))
+  val psum_valid_pipreg = Module(new PipReg(input_delay + macLatency, 1))
+  val psum_last_pipreg = Module(new PipReg(input_delay + macLatency, 1))
   block_first_pipreg.io.in := block_first
   cnt_batchsize_pipreg.io.in := batchsize_cnt
   psum_valid_pipreg.io.in := io.data_in_valid
@@ -148,10 +180,10 @@ class CUFP32 extends Module {
   for (i <- 0 until BATCHSIZE) {
     for (j <- 0 until COL) {
       when(cnt_batchsize_pipout === i.U && psum_valid_pipout && !psum_sel) {
-        psums0(i)(j) := Mux(block_first_pipout, addTreeList(j).io.out, psums0(i)(j) + addTreeList(j).io.out)
+        psums0(i)(j) := Mux(block_first_pipout, macChainList(j).io.out, psums0(i)(j) + macChainList(j).io.out)
       }
       when(cnt_batchsize_pipout === i.U && psum_valid_pipout && psum_sel) {
-        psums1(i)(j) := Mux(block_first_pipout, addTreeList(j).io.out, psums1(i)(j) + addTreeList(j).io.out)
+        psums1(i)(j) := Mux(block_first_pipout, macChainList(j).io.out, psums1(i)(j) + macChainList(j).io.out)
       }
     }
   }

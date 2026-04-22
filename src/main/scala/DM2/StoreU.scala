@@ -5,7 +5,7 @@ import chisel3._
 import chisel3.util._
 class StoreUnit extends Module{
   val io = IO(new Bundle() {
-    val cfg_seqlen = Input(UInt(log2Up(MAX_PREFILL).W))
+    val cfg_seqlen = Input(UInt(log2Up(TILE_SEQLEN).W))
     val cfg_prefill = Input(Bool()) //prefill 长度减去1
     val cfg_valid = Input(Bool())
     val cfg_single_query = Input(Bool())
@@ -19,18 +19,20 @@ class StoreUnit extends Module{
     val data_out_last = Output(Bool())
   })
 
-  val prefill = RegEnable(io.cfg_prefill, io.cfg_valid)
-  val singleQuery = RegEnable(io.cfg_single_query, false.B, io.cfg_valid)
+  val prefill = false.B
+  val singleQuery = true.B
   val seqlen = RegEnable(io.cfg_seqlen, io.cfg_valid)
 
-  val prefill_cnt = RegInit(0.U(log2Up(MAX_PREFILL).W))
+  val prefill_cnt = RegInit(0.U(log2Up(TILE_SEQLEN).W))
   val prefill_last = prefill_cnt === seqlen
   when(prefill && io.data_in_valid) {
     prefill_cnt := Mux(prefill_last, 0.U, prefill_cnt + 1.U)
   }
 
   val batch_cnt = RegInit(0.U(log2Up(BATCHSIZE).W))
-  val batch_last = batch_cnt === Mux(singleQuery, 0.U(batch_cnt.getWidth.W), (BATCHSIZE - 1).U(batch_cnt.getWidth.W))
+  // single_query decode: 每次 DM2 处理一个 head，需要循环 SINGLE_QUERY_BATCH=12 次才结束
+  // 旧逻辑 singleQuery ? 0 : BATCHSIZE-1 错误地让第1个 beat 就 last，导致 DM2 只输出1个 head
+  val batch_last = batch_cnt === Mux(singleQuery, (SINGLE_QUERY_BATCH - 1).U(batch_cnt.getWidth.W), (BATCHSIZE - 1).U(batch_cnt.getWidth.W))
   when(!prefill && io.data_in_valid) {
     batch_cnt := Mux(batch_last, 0.U, batch_cnt + 1.U)
   }

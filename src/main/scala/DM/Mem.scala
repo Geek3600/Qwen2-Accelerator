@@ -20,61 +20,46 @@ class DataMem(val depth: Int, val width: Int)extends Module{
     val r_ready = Output(Bool())
   })
 
-  val full_cnt = Wire(UInt(3.W))
-  val buzy_cnt = Wire(UInt(3.W))
-  buzy_cnt := RegEnable(
-    Mux(
-      io.w_st,
-      Mux(
-        io.w_last,
-        buzy_cnt,
-        buzy_cnt + 1.U
-      ),
-      Mux(
-        io.w_last,
-        buzy_cnt - 1.U,
-        buzy_cnt
-      )
-    ),
-    0.U,
-    io.w_st || io.w_last
-  )
+  val buzy_cnt = RegInit(0.U(2.W))
+  val full_cnt = RegInit(0.U(2.W))
+  val w_sel = RegInit(false.B)
+  val r_sel = RegInit(false.B)
 
-  full_cnt := RegEnable(
-    Mux(
-      io.w_last,
-      Mux(
-        io.r_last,
-        full_cnt,
-        full_cnt + 1.U
-      ),
-      Mux(
-        io.r_last,
-        full_cnt - 1.U,
-        full_cnt
-      )
-    ),
-    0.U,
-    io.w_last || io.r_last
-  )
+  io.w_ready := (full_cnt + buzy_cnt) < 2.U
+  io.r_ready := full_cnt > 0.U
 
-  val w_sel = Wire(Bool())
-  w_sel := RegEnable(~w_sel, false.B, io.w_last)
-  val r_sel = Wire(Bool())
-  r_sel := RegEnable(~r_sel, false.B, io.r_last)
+  val w_fire = io.w_valid && io.w_ready
+  val r_fire = io.r_last && io.r_ready
+  val w_start = w_fire && io.w_st
+  val w_done = w_fire && io.w_last
 
+  when(w_start && !w_done) {
+    buzy_cnt := buzy_cnt + 1.U
+  }.elsewhen(!w_start && w_done) {
+    buzy_cnt := buzy_cnt - 1.U
+  }
+
+  when(w_done && !r_fire) {
+    full_cnt := full_cnt + 1.U
+  }.elsewhen(!w_done && r_fire) {
+    full_cnt := full_cnt - 1.U
+  }
+
+  when(w_done) {
+    w_sel := ~w_sel
+  }
+
+  when(r_fire) {
+    r_sel := ~r_sel
+  }
 
   val mem = Module(new R1W1Mem(depth * 2, width))
-  mem.io.wen := io.w_valid
+  mem.io.wen := w_fire
   mem.io.waddr := Cat(w_sel, io.w_addr)
   mem.io.wdata := io.w_data
   mem.io.ren := true.B
   mem.io.raddr := Cat(r_sel, io.r_addr)
   io.r_data := mem.io.rdata
-
-
-  io.w_ready := (full_cnt + buzy_cnt ) < 2.U
-  io.r_ready := full_cnt > 0.U
 
 
 }

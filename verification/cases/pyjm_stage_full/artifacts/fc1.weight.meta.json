@@ -1,0 +1,12 @@
+{
+  "alias": "weight",
+  "kind": "tensor",
+  "shape": [
+    3072,
+    768
+  ],
+  "dtype": "int8",
+  "num_values": 2359296,
+  "source_file": "weight/pyjm_layer/pyjm_layer/fc1.json",
+  "binary_file": "artifacts/fc1.weight.int8.bin"
+}

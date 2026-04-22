@@ -17,6 +17,7 @@ class LoadUnit extends Module {
     val cfg_prefill = Input(Bool())
     val cfg_valid = Input(Bool())
     val cfg_single_query = Input(Bool())
+    val launch = Input(Bool())
 
     // 与外部MEM的接口
     val data_in = Input(UInt((2*LOAD_VECNUM*DATAW).W)) // 输入数据
@@ -30,8 +31,8 @@ class LoadUnit extends Module {
     val data_out_ready = Input(Bool()) // 下游DM准备好
     val data_out_start = Output(Bool()) // 输出数据开始标志
   })
-  val is_prefill = RegEnable(io.cfg_prefill , io.cfg_valid)
-  val is_single_query = RegEnable(io.cfg_single_query, false.B, io.cfg_valid)
+  val is_prefill = false.B
+  val is_single_query = true.B
   val prelen = RegEnable(io.cfg_prelen , io.cfg_valid) // prefill 模式下的 token 数
 
 
@@ -40,8 +41,11 @@ class LoadUnit extends Module {
   val load_over = Wire(Bool())
   val is_idle = state === idle
   val is_buzy = state === buzy
+  val launchPending = RegInit(false.B)
+  val launchReq = io.launch || launchPending
+  val start = is_idle && launchReq && io.data_in_ready && io.data_out_ready
   val idle_mux = Mux(
-    io.data_in_ready && io.data_out_ready,
+    start,
     buzy,
     idle
   )
@@ -51,6 +55,14 @@ class LoadUnit extends Module {
     buzy
   )
   state := Mux(is_idle, idle_mux, buzy_mux)
+
+  when(io.cfg_valid) {
+    launchPending := false.B
+  }.elsewhen(start) {
+    launchPending := false.B
+  }.elsewhen(io.launch) {
+    launchPending := true.B
+  }
 
 
   // Decode 模式
@@ -105,36 +117,44 @@ class LoadUnit extends Module {
   )
   // 为什么在 vector_cnt 层空转：因为 Decode 模式下，每个 batch 只有一个 Q，LoadUnit 发完 32 周期数据后，需要等 DM 完成计算才能处理下一个 batch。
   val vector_cnt = RegInit(0.U(log2Up(vector_decode_plus).W))
+  val dataWindowActive = Wire(Bool())
+  val loadStep = Wire(Bool())
+  val waitStep = Wire(Bool())
+  val vectorStep = Wire(Bool())
   val vector_last =vector_cnt ===  Mux(is_prefill, 
       (vector_num - 1).U , // prefill 32
       decode_vector_limit
     )
-  when(is_buzy) {
+  when(vectorStep) {
     vector_cnt := Mux(vector_last, 0.U, vector_cnt + 1.U)
   }
 
   //  batch_prefill_plus 的两个候选项
-  //   val batch_prefill_plus = math.max(MAX_PREFILL, MAX_PREFILL*MAX_PREFILL*LOAD_VECNUM/MULNUM)
+  //   val batch_prefill_plus = math.max(LOCAL_PREFILL, LOCAL_PREFILL*LOCAL_PREFILL*LOAD_VECNUM/MULNUM)
   //   ┌────────────────────────────────────────────┬─────┬───────────────────────────────────────────────────────────────────────┐
   //   │                   候选项                   │ 值  │                                 含义                                  │
   //   ├────────────────────────────────────────────┼─────┼───────────────────────────────────────────────────────────────────────┤
-  //   │ MAX_PREFILL                                │ 8   │ Prefill 模式下的 token 数量                                           │
+  //   │ LOCAL_PREFILL                              │ 26  │ 本地 prefill 窗口上限（保持原始固定规模）                              │
   //   ├────────────────────────────────────────────┼─────┼───────────────────────────────────────────────────────────────────────┤
-  //   │ MAX_PREFILL*MAX_PREFILL*LOAD_VECNUM/MULNUM │ 4   │ Prefill 计算所需的额外时间：8×8×2÷32 = 4（这个值比 8 小，所以不生效） │
+  //   │ LOCAL_PREFILL*LOCAL_PREFILL*LOAD_VECNUM/MULNUM │ 42 │ 26-token 局部窗口下 DM1 计算所需的额外时间                              │
   //   └────────────────────────────────────────────┴─────┴───────────────────────────────────────────────────────────────────────┘
   //   Prefill 模式：batch_cnt 循环到 batch_prefill_plus - 1 = 7
   //   - 对应 8 个 token（seqlen=0~7）
   //   Decode 模式：batch_cnt 循环到 BATCHSIZE - 1 = 31
   //   - 对应 32 个 batch
 
-  val batch_prefill_plus = math.max(MAX_PREFILL, MAX_PREFILL*MAX_PREFILL*LOAD_VECNUM/MULNUM)
+  val batch_prefill_plus = math.max(LOCAL_PREFILL, LOCAL_PREFILL*LOCAL_PREFILL*LOAD_VECNUM/MULNUM)
   val batch_cnt = RegInit(0.U(log2Up(math.max(BATCHSIZE, batch_prefill_plus)).W))
   val decode_batch_last = Mux(is_single_query, 0.U(batch_cnt.getWidth.W), (BATCHSIZE - 1).U(batch_cnt.getWidth.W))
   val batch_cnt_last = batch_cnt === Mux(is_prefill,
       (batch_prefill_plus -1).U , // prefill
       decode_batch_last           // decode
     )
-  when(is_buzy && vector_last) {
+  dataWindowActive := is_prefill && batch_cnt <= prelen || !is_prefill && vector_cnt < vector_num.U
+  loadStep := is_buzy && dataWindowActive && io.data_in_ready && io.data_out_ready
+  waitStep := is_buzy && !dataWindowActive
+  vectorStep := loadStep || waitStep
+  when(vectorStep && vector_last) {
     batch_cnt := Mux(batch_cnt_last, 0.U, batch_cnt + 1.U)
   }
 
@@ -146,9 +166,7 @@ class LoadUnit extends Module {
 
   io.data_out := io.data_in
   // 
-  io.data_out_valid := RegNext (is_buzy && (
-      is_prefill && batch_cnt <= prelen ||  // Prefill：只有前 prelen+1 个 token 的数据有效
-      !is_prefill && vector_cnt <(vector_num ).U ) , // Decode：只有每个 batch 的前 32 个周期有效（收集完整向量）
+  io.data_out_valid := RegNext(loadStep,
       false.B)
   io.data_out_start := is_buzy && vector_cnt === 0.U && batch_cnt === 0.U
 }

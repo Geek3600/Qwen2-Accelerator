@@ -14,10 +14,14 @@ usage() {
 Usage:
   run_vcs_server.sh validate-9p-fullseq-vcs [args...]
   run_vcs_server.sh validate-axi-board-fullseq-vcs [args...]
+  run_vcs_server.sh validate-cnn-core-fullseq-vcs [args...]
+  run_vcs_server.sh validate-opt-acc-core-fullseq-vcs [args...]
 
 Examples:
   MAKE_JOBS=16 ./scripts/verification/run_vcs_server.sh validate-9p-fullseq-vcs
   MAKE_JOBS=16 ./scripts/verification/run_vcs_server.sh validate-axi-board-fullseq-vcs
+  MAKE_JOBS=16 ./scripts/verification/run_vcs_server.sh validate-cnn-core-fullseq-vcs
+  MAKE_JOBS=16 ./scripts/verification/run_vcs_server.sh validate-opt-acc-core-fullseq-vcs
 EOF
 }
 
@@ -29,8 +33,11 @@ fi
 MODE="$1"
 shift
 
+export PS1="${PS1-}"
+set +u
 source ~/.bashrc
 conda activate "${CONDA_ENV_NAME}"
+set -u
 
 export CONDA_ENV_PREFIX="${CONDA_PREFIX}"
 export PYTHON_BIN="${CONDA_ENV_PREFIX}/bin/python3"

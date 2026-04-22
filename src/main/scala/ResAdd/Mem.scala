@@ -45,7 +45,8 @@ class DataMem(val depth: Int, val width: Int, val num: Int) extends Module {
   val w_ptr = RegInit(0.U(log2Up(num).W))
   val r_ptr = RegInit(0.U(log2Up(num).W))
 
-  io.w_ready := full_cnt < num.U
+  // A bank is unavailable once it is either full or currently being written.
+  io.w_ready := (full_cnt + buzy_cnt) < num.U
   io.r_ready := full_cnt > 0.U
 
   val w_fire = io.w_valid && io.w_ready

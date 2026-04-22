@@ -11,7 +11,7 @@ class PipReg(val depth: Int, val width: Int) extends Module {
   })
   val pipData = Wire(Vec(depth + 1, UInt(width.W)))
   for (i <- 0 until depth) {
-    pipData(i + 1) := RegNext(pipData(i), 0.U)
+    pipData(i + 1) := RegNext(pipData(i))
   }
   pipData(0) := io.in
   io.out := pipData(depth)

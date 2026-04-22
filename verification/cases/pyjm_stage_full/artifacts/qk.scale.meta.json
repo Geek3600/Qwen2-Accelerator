@@ -1,0 +1,6 @@
+{
+  "alias": "scale",
+  "kind": "scalar",
+  "value": 0.0024550482630729675,
+  "source_file": "weight/pyjm_layer/pyjm_layer/qk_bmm.json"
+}

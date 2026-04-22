@@ -1,0 +1,11 @@
+{
+  "alias": "bias",
+  "kind": "tensor",
+  "shape": [
+    3072
+  ],
+  "dtype": "int8",
+  "num_values": 3072,
+  "source_file": "weight/pyjm_layer/pyjm_layer/fc1.json",
+  "binary_file": "artifacts/fc1.bias.int8.bin"
+}
