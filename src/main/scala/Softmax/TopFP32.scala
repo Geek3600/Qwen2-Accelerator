@@ -39,6 +39,7 @@ class SoftmaxTileKernel extends Module {
     }
   )
 
+  val rawFixed = Wire(Vec(TileV, SInt(inputWidth.W)))
   val inFixed = Wire(Vec(TileV, SInt(inputWidth.W)))
   for (i <- 0 until TileV) {
     val fixedVal = Wire(SInt(inputWidth.W))
@@ -57,6 +58,7 @@ class SoftmaxTileKernel extends Module {
       toInt.io.in := mul.io.out
       fixedVal := toInt.io.out.asSInt
     }
+    rawFixed(i) := fixedVal
     inFixed(i) := Mux(io.inMask(i), fixedVal, negInf)
   }
 
@@ -64,7 +66,7 @@ class SoftmaxTileKernel extends Module {
 
   val shifted = Wire(Vec(TileV, SInt(inputWidth.W)))
   for (i <- 0 until TileV) {
-    shifted(i) := inFixed(i) - io.refMax
+    shifted(i) := rawFixed(i) - io.refMax
   }
 
   val xsMulLog2e = Wire(Vec(TileV, SInt(inputWidth.W)))
@@ -74,10 +76,15 @@ class SoftmaxTileKernel extends Module {
     xsMulLog2e(i) := (full >> inputFrac).asSInt
   }
 
+  val xsMulLog2eReg = RegInit(VecInit(Seq.fill(TileV)(0.S(inputWidth.W))))
+  val expMaskReg = RegInit(VecInit(Seq.fill(TileV)(false.B)))
+  xsMulLog2eReg := xsMulLog2e
+  expMaskReg := io.inMask
+
   val expVals = Wire(Vec(TileV, UInt(expValWidth.W)))
   for (i <- 0 until TileV) {
-    val intPart = xsMulLog2e(i) >> inputFrac
-    val fracRaw = (xsMulLog2e(i) - (intPart << inputFrac)).asUInt
+    val intPart = xsMulLog2eReg(i) >> inputFrac
+    val fracRaw = (xsMulLog2eReg(i) - (intPart << inputFrac)).asUInt
     val fracPart = fracRaw(inputFrac - 1, 0)
     val base = exp2Lut(fracPart)
     val baseWide = Cat(0.U((expValWidth - expLutWidth).W), base)
@@ -87,7 +94,7 @@ class SoftmaxTileKernel extends Module {
       (baseWide << intPart.asUInt)(expValWidth - 1, 0),
       baseWide >> (-intPart).asUInt
     )
-    expVals(i) := Mux(io.inMask(i), shiftedBase, 0.U)
+    expVals(i) := Mux(expMaskReg(i), shiftedBase, 0.U)
     io.expVals(i) := expVals(i)
   }
 
@@ -200,12 +207,13 @@ class SoftmaxPipFP32 extends Module {
     stCollect,
     stPassMaxEval,
     stPassSumEval,
+    stPassSumCapture,
     stRecipStart,
     stRecipWait,
     stPassOutLaunch,
     stPassOutWait,
     stPassOutHold
-  ) = Enum(8)
+  ) = Enum(9)
   val state = RegInit(stCollect)
 
   val kernel = Module(new SoftmaxTileKernel)
@@ -293,6 +301,8 @@ class SoftmaxPipFP32 extends Module {
     globalMaxReg := kernel.io.localMax
     state := stPassSumEval
   }.elsewhen(state === stPassSumEval) {
+    state := stPassSumCapture
+  }.elsewhen(state === stPassSumCapture) {
     expTileReg := kernel.io.expVals
     sumExpReg := kernel.io.tileSum
     state := stRecipStart

@@ -78,13 +78,37 @@ proc inject_top_synth_reports_into_run_tcl {run_tcl run_name} {
   if {[string first $synth_anchor $data] < 0} {
     error "Unable to find synth_design anchor in '$run_tcl'."
   }
-  set cdc_block [string map [list __BEGIN__ $cdc_begin __END__ $cdc_end] {__BEGIN__set shell_clk [get_clocks -quiet clk_out100m_app_shell_9p_clk_wiz_0_0_1]
-set ddr_ui_clks [get_clocks -quiet {mmcm_clkout0_2 mmcm_clkout0_3 pll_clk[0]_2_DIV pll_clk[1]_2_DIV pll_clk[2]_2_DIV pll_clk[0]_3_DIV pll_clk[1]_3_DIV pll_clk[2]_3_DIV}]
-if {[llength $shell_clk] > 0 && [llength $ddr_ui_clks] > 0} {
+  set xpm_warning_cfg {# Vendor xpm_memory_xdc.tcl emits Vivado 12-180 when its
+# primitive-cell query runs before memory primitives are visible. Our project
+# XDC uses -quiet lookups, so demoting this message ID is safe here.
+set_msg_config -id {Vivado 12-180} -new_severity INFO
+}
+  set cdc_block [string map [list __BEGIN__ $cdc_begin __END__ $cdc_end] {__BEGIN__proc optacc_unique_clocks {clks} {
+  return [lsort -unique $clks]
+}
+proc optacc_remove_clocks {clks remove_clks} {
+  set out {}
+  foreach clk $clks {
+    if {[lsearch -exact $remove_clks $clk] < 0} {
+      lappend out $clk
+    }
+  }
+  return [lsort -unique $out]
+}
+set shell_clk [optacc_unique_clocks [get_clocks -quiet -include_generated_clocks {clk_out100m_app_shell_9p_clk_wiz_0_0 clk_out100m_app_shell_9p_clk_wiz_0_0_*}]]
+set ddr_ui_clks [optacc_unique_clocks [get_clocks -quiet -include_generated_clocks {mmcm_clkout0 mmcm_clkout0_* pll_clk[0]_2_DIV pll_clk[1]_2_DIV pll_clk[2]_2_DIV pll_clk[0]_3_DIV pll_clk[1]_3_DIV pll_clk[2]_3_DIV}]]
+set optacc_core_clk [optacc_unique_clocks [get_clocks -quiet -include_generated_clocks optacc_core_clk_100m]]
+set shell_clk [optacc_remove_clocks $shell_clk $optacc_core_clk]
+set ddr_ui_clks [optacc_remove_clocks $ddr_ui_clks $optacc_core_clk]
+if {[llength $shell_clk] > 0 && [llength $ddr_ui_clks] > 0 && [llength $optacc_core_clk] > 0} {
+  set_clock_groups -asynchronous -group $shell_clk -group $ddr_ui_clks -group $optacc_core_clk
+} elseif {[llength $shell_clk] > 0 && [llength $ddr_ui_clks] > 0} {
   set_clock_groups -asynchronous -group $shell_clk -group $ddr_ui_clks
+} elseif {[llength $optacc_core_clk] > 0 && [llength $ddr_ui_clks] > 0} {
+  set_clock_groups -asynchronous -group $optacc_core_clk -group $ddr_ui_clks
 }
 __END__}]
-  set data [string map [list $synth_anchor "${cdc_block}\n${synth_anchor}"] $data]
+  set data [string map [list $synth_anchor "${xpm_warning_cfg}\n${cdc_block}\n${synth_anchor}"] $data]
 
   set reports_anchor "OPTRACE \"synth reports\" START { REPORT }\n"
   if {[string first $reports_anchor $data] < 0} {

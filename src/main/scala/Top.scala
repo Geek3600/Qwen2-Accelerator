@@ -224,20 +224,35 @@ class Top extends Module{
   qkvlinear.io.q_bias_scale := io.q_bias_scale
   qkvlinear.io.k_bias_scale := io.k_bias_scale
   qkvlinear.io.v_bias_scale := io.v_bias_scale
-  qkvlinear.io.data_out_ready := atten.io.data_ready
+  val qkvToAttnQ = Module(new Queue(new Bundle {
+    val data = UInt(48.W)
+    val st = Bool()
+    val head = UInt(qkvlinear.io.data_out_head.getWidth.W)
+    val addr = UInt(32.W)
+    val last = Bool()
+  }, 2, pipe = true, flow = false))
+  qkvToAttnQ.suggestName("qkvToAttnQ")
+  qkvlinear.io.data_out_ready := qkvToAttnQ.io.enq.ready
+  qkvToAttnQ.io.enq.valid := qkvlinear.io.data_out_valid
+  qkvToAttnQ.io.enq.bits.data := qkvlinear.io.data_out
+  qkvToAttnQ.io.enq.bits.st := qkvlinear.io.data_out_st
+  qkvToAttnQ.io.enq.bits.head := qkvlinear.io.data_out_head
+  qkvToAttnQ.io.enq.bits.addr := qkvlinear.io.data_out_addr
+  qkvToAttnQ.io.enq.bits.last := qkvlinear.io.data_out_last
+  qkvToAttnQ.io.deq.ready := atten.io.data_ready
 
   io.qkv_w_addr := qkvlinear.io.weight_init_addr
-  val attnTapFire = qkvlinear.io.data_out_valid && atten.io.data_ready
+  val attnTapFire = qkvToAttnQ.io.deq.valid && atten.io.data_ready
   val attnTapDataReg = Reg(UInt(48.W))
   val attnTapHeadReg = Reg(UInt(qkvlinear.io.data_out_head.getWidth.W))
   val attnTapAddrReg = Reg(UInt(32.W))
   val attnTapLastReg = RegInit(false.B)
   val attnTapValidReg = RegInit(false.B)
   when(attnTapFire) {
-    attnTapDataReg := qkvlinear.io.data_out
-    attnTapHeadReg := qkvlinear.io.data_out_head
-    attnTapAddrReg := qkvlinear.io.data_out_addr
-    attnTapLastReg := qkvlinear.io.data_out_last
+    attnTapDataReg := qkvToAttnQ.io.deq.bits.data
+    attnTapHeadReg := qkvToAttnQ.io.deq.bits.head
+    attnTapAddrReg := qkvToAttnQ.io.deq.bits.addr
+    attnTapLastReg := qkvToAttnQ.io.deq.bits.last
   }
   attnTapValidReg := attnTapFire
   io.attn_tap_data := attnTapDataReg
@@ -279,11 +294,11 @@ class Top extends Module{
   atten.io.dm2_out_inv_scale := io.dm2_out_inv_scale
   atten.io.w_in := io.sm_w_in
 
-  atten.io.data_in_st := qkvlinear.io.data_out_st
-  atten.io.data_in := qkvlinear.io.data_out
-  atten.io.data_addr := qkvlinear.io.data_out_addr
-  atten.io.data_valid := qkvlinear.io.data_out_valid
-  atten.io.data_last := qkvlinear.io.data_out_last
+  atten.io.data_in_st := qkvToAttnQ.io.deq.bits.st
+  atten.io.data_in := qkvToAttnQ.io.deq.bits.data
+  atten.io.data_addr := qkvToAttnQ.io.deq.bits.addr
+  atten.io.data_valid := qkvToAttnQ.io.deq.valid
+  atten.io.data_last := qkvToAttnQ.io.deq.bits.last
   atten.io.dm1_override_enable := io.attn_dm1_override_enable
   atten.io.dm1_override_data := io.attn_dm1_override_data
   atten.io.dm1_override_st := io.attn_dm1_override_st
@@ -414,7 +429,20 @@ class Top extends Module{
   ffnup.io.bias_init_valid := io.ffnup_b_valid
   ffnup.io.out_inv_scale := io.ffnup_out_inv_scale
   ffnup.io.bias_scale := io.ffnup_bias_scale
-  ffnup.io.data_out_ready := ffndown.io.data_ready
+  val ffnUpToDownQ = Module(new Queue(new Bundle {
+    val data = UInt(FFNUpParam.MEM_WIDTH.W)
+    val st = Bool()
+    val addr = UInt(ffnup.io.data_out_addr.getWidth.W)
+    val last = Bool()
+  }, 2, pipe = true, flow = false))
+  ffnUpToDownQ.suggestName("ffnUpToDownQ")
+  ffnup.io.data_out_ready := ffnUpToDownQ.io.enq.ready
+  ffnUpToDownQ.io.enq.valid := ffnup.io.data_out_valid
+  ffnUpToDownQ.io.enq.bits.data := ffnup.io.data_out
+  ffnUpToDownQ.io.enq.bits.st := ffnup.io.data_out_st
+  ffnUpToDownQ.io.enq.bits.addr := ffnup.io.data_out_addr
+  ffnUpToDownQ.io.enq.bits.last := ffnup.io.data_out_last
+  ffnUpToDownQ.io.deq.ready := ffndown.io.data_ready
 
   io.ffnup_w_addr := ffnup.io.weight_init_addr
 
@@ -426,11 +454,11 @@ class Top extends Module{
   ffndown.io.cfg_prefill := io.cfg_prefill
   ffndown.io.cfg_valid := io.cfg_valid
 
-  ffndown.io.data_in := ffnup.io.data_out
-  ffndown.io.data_in_st := ffnup.io.data_out_st
-  ffndown.io.data_addr := ffnup.io.data_out_addr
-  ffndown.io.data_valid := ffnup.io.data_out_valid
-  ffndown.io.data_last := ffnup.io.data_out_last
+  ffndown.io.data_in := ffnUpToDownQ.io.deq.bits.data
+  ffndown.io.data_in_st := ffnUpToDownQ.io.deq.bits.st
+  ffndown.io.data_addr := ffnUpToDownQ.io.deq.bits.addr
+  ffndown.io.data_valid := ffnUpToDownQ.io.deq.valid
+  ffndown.io.data_last := ffnUpToDownQ.io.deq.bits.last
 
   ffndown.io.weight_init_mode := io.weight_init_mode
   ffndown.io.weight_init_data := io.ffndown_w_in
@@ -521,23 +549,40 @@ object AttenTopGen extends App {
 
   def injectVivadoAttributes(path: Path): Unit = {
     val src = Files.readString(path, StandardCharsets.UTF_8)
-    val replacements = Seq(
-      "  reg                cfgRestartPending;\t// src/main/scala/OutLinear/OutLinearFP32.scala:66:34" ->
-        "  (* max_fanout = 32 *) reg                cfgRestartPending;\t// src/main/scala/OutLinear/OutLinearFP32.scala:66:34",
-      "  reg                captureWriteEnableReg;\t// src/main/scala/OutLinear/OutLinearFP32.scala:90:38" ->
-        "  (* max_fanout = 32 *) reg                captureWriteEnableReg;\t// src/main/scala/OutLinear/OutLinearFP32.scala:90:38",
-      "  reg  [4:0]         captureTokenReg;\t// src/main/scala/OutLinear/OutLinearFP32.scala:94:28" ->
-        "  (* max_fanout = 32 *) reg  [4:0]         captureTokenReg;\t// src/main/scala/OutLinear/OutLinearFP32.scala:94:28",
-      "  reg  [3:0]         captureSlotReg;\t// src/main/scala/OutLinear/OutLinearFP32.scala:96:27" ->
-        "  (* max_fanout = 32 *) reg  [3:0]         captureSlotReg;\t// src/main/scala/OutLinear/OutLinearFP32.scala:96:27",
-      "  reg                collectWriteEnableReg;\t// src/main/scala/QKVLinear/QKVLinear.scala:176:38" ->
-        "  (* max_fanout = 32 *) reg                collectWriteEnableReg;\t// src/main/scala/QKVLinear/QKVLinear.scala:176:38",
-      "  reg  [4:0]         collectTokenReg;\t// src/main/scala/QKVLinear/QKVLinear.scala:178:28" ->
-        "  (* max_fanout = 32 *) reg  [4:0]         collectTokenReg;\t// src/main/scala/QKVLinear/QKVLinear.scala:178:28",
-      "  reg  [7:0]         collectVecReg;\t// src/main/scala/QKVLinear/QKVLinear.scala:180:26" ->
-        "  (* max_fanout = 32 *) reg  [7:0]         collectVecReg;\t// src/main/scala/QKVLinear/QKVLinear.scala:180:26"
+    val signalLinePatterns = Seq(
+      raw"(?m)^  reg\s+cfgRestartPending;\s*// src/main/scala/OutLinear/OutLinearFP32\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+captureWriteEnableReg;\s*// src/main/scala/OutLinear/OutLinearFP32\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+\[[^\n]+\]\s+captureTokenReg;\s*// src/main/scala/OutLinear/OutLinearFP32\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+\[[^\n]+\]\s+captureSlotReg;\s*// src/main/scala/OutLinear/OutLinearFP32\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+collectWriteEnableReg;\s*// src/main/scala/QKVLinear/QKVLinear\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+\[[^\n]+\]\s+collectTokenReg;\s*// src/main/scala/QKVLinear/QKVLinear\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+\[[^\n]+\]\s+collectVecReg;\s*// src/main/scala/QKVLinear/QKVLinear\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+out_bank_sel;\s*// src/main/scala/QKVLinear/CUQuant\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+out_bank_sel;\s*// src/main/scala/OutLinear/CUFP32\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+out_bank_sel;\s*// src/main/scala/FFNUp/CUQuant\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+out_bank_sel;\s*// src/main/scala/FFNDown/CUFP32\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+\[[^\n]+\]\s+headCntReg;\s*// src/main/scala/QKVLinear/QKVLinear\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+\[[^\n]+\]\s+prefillCntReg;\s*// src/main/scala/QKVLinear/QKVLinear\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+\[[^\n]+\]\s+batchCntReg;\s*// src/main/scala/QKVLinear/QKVLinear\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+\[[^\n]+\]\s+outputCntReg;\s*// src/main/scala/QKVLinear/QKVLinear\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+output_valid_reg;\s*// src/main/scala/QKVLinear/QKVLinear\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+\[[^\n]+\]\s+output_head_reg;\s*// src/main/scala/QKVLinear/QKVLinear\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+\[[^\n]+\]\s+output_addr_reg;\s*// src/main/scala/QKVLinear/QKVLinear\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+\[[^\n]+\]\s+batchsizeCntReg;\s*// src/main/scala/(QKVLinear/CUQuant|OutLinear/CUFP32|FFNUp/CUQuant|FFNDown/CUFP32)\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+\[[^\n]+\]\s+blockCntReg;\s*// src/main/scala/(QKVLinear/CUQuant|OutLinear/CUFP32|FFNUp/CUQuant|FFNDown/CUFP32)\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+psumSelReg;\s*// src/main/scala/(QKVLinear/CUQuant|OutLinear/CUFP32|FFNUp/CUQuant|FFNDown/CUFP32)\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+\[[^\n]+\]\s+resVectorCntReg;\s*// src/main/scala/(QKVLinear/CUQuant|OutLinear/CUFP32|FFNUp/CUQuant|FFNDown/CUFP32)\.scala:\d+:\d+$$",
+      raw"(?m)^  reg\s+\[[^\n]+\]\s+resBatchsizeCntReg;\s*// src/main/scala/(QKVLinear/CUQuant|OutLinear/CUFP32|FFNUp/CUQuant|FFNDown/CUFP32)\.scala:\d+:\d+$$"
     )
-    val patched = replacements.foldLeft(src) { case (acc, (from, to)) => acc.replace(from, to) }
+    val fanoutPatched = signalLinePatterns.foldLeft(src) { (acc, pattern) =>
+      pattern.r.replaceAllIn(acc, m => s"  (* max_fanout = 32 *) ${m.matched.trim}")
+    }
+    val qkvVecBufferMemPattern =
+      raw"(?m)^  reg \[95:0\] Memory\[0:3071\];\s*// src/main/scala/QKVLinear/QKVLinear\.scala:\d+:\d+$$"
+    val patched = qkvVecBufferMemPattern.r.replaceAllIn(
+      fanoutPatched,
+      m => s"""  (* ram_style = "block" *) ${m.matched.trim}"""
+    )
     Files.writeString(path, patched, StandardCharsets.UTF_8)
   }
 

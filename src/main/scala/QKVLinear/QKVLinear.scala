@@ -135,11 +135,12 @@ class QKVLinear extends Module {
   // 需要收集完整的 2304 维向量，然后提取 Q/K/V
 
   // 状态机
-  val idle :: collecting :: outputting :: Nil = Enum(3)
+  val idle :: collecting :: priming :: outputting :: Nil = Enum(4)
   val state = RegInit(idle)
 
   val is_idle = state === idle
   val is_collecting = state === collecting
+  val is_priming = state === priming
   val is_outputting = state === outputting
   val all_output_done = WireDefault(false.B)
   val collect_start = is_idle || (is_outputting && all_output_done && io.data_out_ready)
@@ -183,8 +184,13 @@ class QKVLinear extends Module {
   val collect_token = (collect_addr_d / COLLECT_NUM.U)(log2Up(BATCHSIZE) - 1, 0)
   val collect_vec = collect_addr_d % COLLECT_NUM.U
 
-  // 缓存所有 token 的 2304 维向量
-  val vec_buffer = Reg(Vec(BATCHSIZE, Vec(COLLECT_NUM, UInt(MEM_WIDTH.W))))
+  // 缓存所有 token 的 2304 维向量。这里必须用同步 RAM；寄存器大阵列会展开
+  // 成约 295 kbit FF/选择网络，是当前 CLB site 和 QKV route delay 的主来源。
+  val VEC_BUFFER_DEPTH = BATCHSIZE * COLLECT_NUM
+  val vecBufferMem = SyncReadMem(VEC_BUFFER_DEPTH, UInt(MEM_WIDTH.W))
+  vecBufferMem.suggestName("vecBufferMem")
+  def vecBufferAddr(token: UInt, word: UInt): UInt =
+    (token * COLLECT_NUM.U + word)(log2Up(VEC_BUFFER_DEPTH) - 1, 0)
   val collectWriteEnableReg = RegInit(false.B)
   collectWriteEnableReg.suggestName("collectWriteEnableReg")
   val collectTokenReg = Reg(UInt(collect_token.getWidth.W))
@@ -228,81 +234,207 @@ class QKVLinear extends Module {
     collectDataReg := biased_vec.asUInt
   }
   when(collectWriteEnableReg) {
-    vec_buffer(collectTokenReg)(collectVecReg) := collectDataReg
+    vecBufferMem.write(vecBufferAddr(collectTokenReg, collectVecReg), collectDataReg)
   }
 
-  // Head 计数器 (0~HEAD_NUM-1)
-  val head_cnt = Wire(UInt(log2Up(HEAD_NUM + 1).W))
+  // Keep the output counters as explicit state regs. The previous
+  // self-referential RegEnable form lets Vivado sink "inactive => 0" logic
+  // into local R pins, which creates the long recovery/reset paths now showing
+  // up in routed timing.
+  val headCntReg = RegInit(0.U(log2Up(HEAD_NUM + 1).W))
+  val prefillCntReg = RegInit(0.U(log2Up(MAX_PREFILL + 1).W))
+  val batchCntReg = RegInit(0.U(log2Up(BATCHSIZE).W))
+  val head_cnt = headCntReg
   val head_last = head_cnt === (HEAD_NUM - 1).U
-  val prefill_cnt = Wire(UInt(log2Up(MAX_PREFILL + 1).W))
-  val batch_cnt = Wire(UInt(log2Up(BATCHSIZE).W))
+  val prefill_cnt = prefillCntReg
+  val batch_cnt = batchCntReg
   val current_token = Mux(is_prefill, prefill_cnt, batch_cnt)
-  // vec_buffer holds exactly BATCHSIZE tokens; batch_cnt never reaches 32 and
-  // prefill_cnt is narrower, so trimming the unreachable high bit avoids
-  // building a wider-than-necessary dynamic mux without changing semantics.
   val current_token_idx = current_token(log2Up(BATCHSIZE) - 1, 0)
-  val full_vec = vec_buffer(current_token_idx).asUInt.asTypeOf(Vec(OUT_VECTOR, UInt(DATAW.W)))
-
-  // 提取 Q/K/V (用 head_cnt 偏移选择当前 head)
-  // Q: [head*64 : head*64+63], K: [768+head*64 : ...], V: [1536+head*64 : ...]
-  val Q_vec = Wire(Vec(HEAD_DIM, UInt(DATAW.W)))
-  val K_vec = Wire(Vec(HEAD_DIM, UInt(DATAW.W)))
-  val V_vec = Wire(Vec(HEAD_DIM, UInt(DATAW.W)))
-
-  // 用 VecInit + head_cnt 索引（因为 full_vec 的动态索引需要这种方式）
-  for (i <- 0 until HEAD_DIM) {
-    Q_vec(i) := VecInit((0 until HEAD_NUM).map(h => full_vec(h * HEAD_DIM + i)))(head_cnt)
-    K_vec(i) := VecInit((0 until HEAD_NUM).map(h => full_vec(768 + h * HEAD_DIM + i)))(head_cnt)
-    V_vec(i) := VecInit((0 until HEAD_NUM).map(h => full_vec(768 * 2 + h * HEAD_DIM + i)))(head_cnt)
-  }
-
   // 输出计数器 (32 次，每次输出 2 个 Q + 2 个 K + 2 个 V)
   val OUTPUT_NUM = HEAD_DIM / 2  // = 32
-  val output_cnt = Wire(UInt(log2Up(OUTPUT_NUM).W))
+  val outputCntReg = RegInit(0.U(log2Up(OUTPUT_NUM).W))
+  val output_cnt = outputCntReg
   val output_last = output_cnt === (OUTPUT_NUM - 1).U
 
-  output_cnt := RegEnable(
-    Mux(output_last, 0.U, output_cnt + 1.U),
-    0.U,
-    is_outputting && io.data_out_ready
-  )
-
-  // 每周期输出 2 个元素
-  val idx = (output_cnt << 1)(5, 0)
-  val idx_plus1 = (idx + 1.U)(5, 0)
-
-  val out_data = Cat(
-    V_vec(idx_plus1), V_vec(idx),      // V1, V0 (高 16 位)
-    K_vec(idx_plus1), K_vec(idx),      // K1, K0 (中 16 位)
-    Q_vec(idx_plus1), Q_vec(idx)       // Q1, Q0 (低 16 位)
-  )
+  val output_fire = is_outputting && io.data_out_ready
 
   // Prefill 计数器
   val prefill_last = prefill_cnt === seqlen
-  prefill_cnt := RegEnable(
-    Mux(prefill_last, 0.U, prefill_cnt + 1.U),
-    0.U,
-    is_outputting && output_last && is_prefill && io.data_out_ready
-  )
 
   // Decode 计数器
   val decodeBatchLast = Mux(is_single_query, 0.U(batch_cnt.getWidth.W), (BATCHSIZE - 1).U(batch_cnt.getWidth.W))
   val batch_last = batch_cnt === decodeBatchLast
-  batch_cnt := RegEnable(
-    Mux(batch_last, 0.U, batch_cnt + 1.U),
-    0.U,
-    is_outputting && output_last && !is_prefill && io.data_out_ready
-  )
 
   // token 级别的 last（prefill 或 decode 的所有 token 输出完毕）
   val token_last = is_prefill && prefill_last || !is_prefill && batch_last
+  val nextHeadCnt = Mux(head_last, 0.U(head_cnt.getWidth.W), headCntReg + 1.U)
+  val nextPrefillCnt = Mux(prefill_last, 0.U(prefill_cnt.getWidth.W), prefillCntReg + 1.U)
+  val nextBatchCnt = Mux(batch_last, 0.U(batch_cnt.getWidth.W), batchCntReg + 1.U)
+  val nextTokenIdx = Mux(is_prefill, nextPrefillCnt, nextBatchCnt)(log2Up(BATCHSIZE) - 1, 0)
+  val successorHeadIdx = Mux(token_last, nextHeadCnt, headCntReg)
 
-  // head_cnt 计数器：在所有 token 的 output 输出完后递增
-  head_cnt := RegEnable(
-    Mux(head_last, 0.U, head_cnt + 1.U),
-    0.U,
-    is_outputting && output_last && token_last && io.data_out_ready
+  val HEAD_WORDS = (HEAD_DIM + ROW - 1) / ROW
+  val PREFETCH_STEPS = HEAD_WORDS * 3
+  val headOffsetWidth = log2Up(ROW)
+  val activeHeadQWordReg = Reg(Vec(HEAD_WORDS, UInt(MEM_WIDTH.W)))
+  val activeHeadKWordReg = Reg(Vec(HEAD_WORDS, UInt(MEM_WIDTH.W)))
+  val activeHeadVWordReg = Reg(Vec(HEAD_WORDS, UInt(MEM_WIDTH.W)))
+  val shadowHeadQWordReg = Reg(Vec(HEAD_WORDS, UInt(MEM_WIDTH.W)))
+  val shadowHeadKWordReg = Reg(Vec(HEAD_WORDS, UInt(MEM_WIDTH.W)))
+  val shadowHeadVWordReg = Reg(Vec(HEAD_WORDS, UInt(MEM_WIDTH.W)))
+  val activeHeadOffsetReg = RegInit(0.U(headOffsetWidth.W))
+  val shadowHeadOffsetReg = RegInit(0.U(headOffsetWidth.W))
+  val shadowValidReg = RegInit(false.B)
+  val prefetchBusyReg = RegInit(false.B)
+  val prefetchDrainReg = RegInit(false.B)
+  val prefetchToActiveReg = RegInit(false.B)
+  val prefetchTokenIdxReg = Reg(UInt(log2Up(BATCHSIZE).W))
+  val prefetchHeadIdxReg = Reg(UInt(head_cnt.getWidth.W))
+  val prefetchStepReg = RegInit(0.U(log2Up(PREFETCH_STEPS).W))
+  val prefetchSection = prefetchStepReg / HEAD_WORDS.U
+  val prefetchChunk = prefetchStepReg % HEAD_WORDS.U
+  val prefetchHeadElemBase = prefetchHeadIdxReg * HEAD_DIM.U
+  val prefetchHeadWordBase = prefetchHeadElemBase / ROW.U
+  val prefetchHeadOffset = prefetchHeadElemBase % ROW.U
+  val prefetchWordIdx = prefetchSection * (768 / ROW).U + prefetchHeadWordBase + prefetchChunk
+  val prefetchIssueFire = prefetchBusyReg && !prefetchDrainReg
+  val prefetchReadWordIdx = prefetchWordIdx(log2Up(COLLECT_NUM) - 1, 0)
+  val prefetchWord = vecBufferMem.read(
+    vecBufferAddr(prefetchTokenIdxReg, prefetchReadWordIdx),
+    prefetchIssueFire
   )
+  val prefetchReadValidReg = RegNext(prefetchIssueFire, false.B)
+  val prefetchReadLastReg = RegEnable(
+    prefetchStepReg === (PREFETCH_STEPS - 1).U,
+    false.B,
+    prefetchIssueFire
+  )
+  val prefetchSectionReg = RegEnable(prefetchSection, 0.U(prefetchSection.getWidth.W), prefetchIssueFire)
+  val prefetchChunkReg = RegEnable(prefetchChunk, 0.U(prefetchChunk.getWidth.W), prefetchIssueFire)
+  val prefetchHeadOffsetReg = RegEnable(prefetchHeadOffset, 0.U(headOffsetWidth.W), prefetchIssueFire)
+  val prefetchToActiveReadReg = RegEnable(prefetchToActiveReg, false.B, prefetchIssueFire)
+  val startPriming = is_collecting && collectWriteEnableReg && collectVecReg === (COLLECT_NUM - 1).U
+  val startShadowPrefetch =
+    is_outputting &&
+      io.data_out_ready &&
+      output_cnt === 0.U &&
+      !all_output_done &&
+      !prefetchBusyReg &&
+      !shadowValidReg
+
+  when(prefetchReadValidReg) {
+    switch(prefetchSectionReg) {
+      is(0.U) {
+        when(prefetchToActiveReadReg) {
+          activeHeadQWordReg(prefetchChunkReg) := prefetchWord
+        }.otherwise {
+          shadowHeadQWordReg(prefetchChunkReg) := prefetchWord
+        }
+      }
+      is(1.U) {
+        when(prefetchToActiveReadReg) {
+          activeHeadKWordReg(prefetchChunkReg) := prefetchWord
+        }.otherwise {
+          shadowHeadKWordReg(prefetchChunkReg) := prefetchWord
+        }
+      }
+      is(2.U) {
+        when(prefetchToActiveReadReg) {
+          activeHeadVWordReg(prefetchChunkReg) := prefetchWord
+        }.otherwise {
+          shadowHeadVWordReg(prefetchChunkReg) := prefetchWord
+        }
+      }
+    }
+  }
+
+  // 每周期输出 2 个元素
+  val idx = (output_cnt << 1)(5, 0)
+  val idx_plus1 = (idx + 1.U)(5, 0)
+  def unpackHeadWords(words: Vec[UInt]): Vec[UInt] = {
+    val elems = Wire(Vec(HEAD_WORDS * ROW, UInt(DATAW.W)))
+    for (word <- 0 until HEAD_WORDS) {
+      for (lane <- 0 until ROW) {
+        elems(word * ROW + lane) := words(word)(DATAW * (lane + 1) - 1, DATAW * lane)
+      }
+    }
+    elems
+  }
+  val qElems = unpackHeadWords(activeHeadQWordReg)
+  val kElems = unpackHeadWords(activeHeadKWordReg)
+  val vElems = unpackHeadWords(activeHeadVWordReg)
+  val headWindowIdxWidth = log2Up(HEAD_WORDS * ROW)
+  val elemIdx0 =
+    (activeHeadOffsetReg.pad(headWindowIdxWidth) + idx.pad(headWindowIdxWidth))(headWindowIdxWidth - 1, 0)
+  val elemIdx1 =
+    (activeHeadOffsetReg.pad(headWindowIdxWidth) + idx_plus1.pad(headWindowIdxWidth))(headWindowIdxWidth - 1, 0)
+  val out_data = Cat(
+    vElems(elemIdx1), vElems(elemIdx0),      // V1, V0 (高 16 位)
+    kElems(elemIdx1), kElems(elemIdx0),      // K1, K0 (中 16 位)
+    qElems(elemIdx1), qElems(elemIdx0)       // Q1, Q0 (低 16 位)
+  )
+
+  when(prefetchIssueFire) {
+    when(prefetchStepReg === (PREFETCH_STEPS - 1).U) {
+      prefetchDrainReg := true.B
+    }.otherwise {
+      prefetchStepReg := prefetchStepReg + 1.U
+    }
+  }
+  when(prefetchReadValidReg && prefetchReadLastReg) {
+    prefetchBusyReg := false.B
+    prefetchDrainReg := false.B
+    prefetchStepReg := 0.U
+    when(prefetchToActiveReadReg) {
+      activeHeadOffsetReg := prefetchHeadOffsetReg
+      state := outputting
+    }.otherwise {
+      shadowHeadOffsetReg := prefetchHeadOffsetReg
+      shadowValidReg := true.B
+    }
+  }
+
+  when(startPriming) {
+    state := priming
+    prefetchBusyReg := true.B
+    prefetchDrainReg := false.B
+    prefetchToActiveReg := true.B
+    prefetchTokenIdxReg := 0.U
+    prefetchHeadIdxReg := 0.U
+    prefetchStepReg := 0.U
+    shadowValidReg := false.B
+  }
+
+  when(startShadowPrefetch) {
+    prefetchBusyReg := true.B
+    prefetchDrainReg := false.B
+    prefetchToActiveReg := false.B
+    prefetchTokenIdxReg := nextTokenIdx
+    prefetchHeadIdxReg := successorHeadIdx
+    prefetchStepReg := 0.U
+  }
+
+  when(output_fire) {
+    outputCntReg := Mux(output_last, 0.U, outputCntReg + 1.U)
+    when(output_last) {
+      when(!all_output_done) {
+        assert(shadowValidReg, "QKV shadow prefetch was not ready at token boundary")
+        activeHeadQWordReg := shadowHeadQWordReg
+        activeHeadKWordReg := shadowHeadKWordReg
+        activeHeadVWordReg := shadowHeadVWordReg
+        activeHeadOffsetReg := shadowHeadOffsetReg
+        shadowValidReg := false.B
+      }
+      when(is_prefill) {
+        prefillCntReg := Mux(prefill_last, 0.U, prefillCntReg + 1.U)
+      }.otherwise {
+        batchCntReg := Mux(batch_last, 0.U, batchCntReg + 1.U)
+      }
+      when(token_last) {
+        headCntReg := Mux(head_last, 0.U, headCntReg + 1.U)
+      }
+    }
+  }
 
   // 所有数据输出完毕（所有 head 的所有 token）
   all_output_done := output_last && token_last && head_last
@@ -315,12 +447,17 @@ class QKVLinear extends Module {
       }
     }
     is(collecting) {
-      when(collectWriteEnableReg && collectVecReg === (COLLECT_NUM - 1).U) {
+      when(startPriming) {
+        state := priming
+      }
+    }
+    is(priming) {
+      when(!prefetchBusyReg) {
         state := outputting
       }
     }
     is(outputting) {
-      when(all_output_done && io.data_out_ready) {
+      when(all_output_done && output_fire) {
         state := idle
       }
     }

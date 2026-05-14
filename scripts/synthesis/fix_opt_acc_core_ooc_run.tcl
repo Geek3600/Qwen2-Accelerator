@@ -23,6 +23,49 @@ proc get_arg_or_default {idx default_value} {
   return $default_value
 }
 
+proc sync_optacc_rtl_into_project {project_dir} {
+  set repo_optacc "/home/hyyuan/workspace/opt_acc/opt_acc_core.sv"
+  set repo_top    "/home/hyyuan/workspace/opt_acc/Top_vivado.sv"
+  if {![file exists $repo_optacc]} {
+    set repo_optacc "/home/hyyuan/workspace/opt_acc/deliverables/vivado_opt_acc_core_ip/hdl/opt_acc_core.sv"
+  }
+  if {![file exists $repo_top]} {
+    set repo_top "/home/hyyuan/workspace/opt_acc/generated/Top_vivado.sv"
+  }
+
+  if {![file exists $repo_optacc]} {
+    error "Missing latest opt_acc_core RTL in repo copy: $repo_optacc"
+  }
+  if {![file exists $repo_top]} {
+    error "Missing latest Top_vivado RTL in repo copy: $repo_top"
+  }
+
+  set copied 0
+  foreach pattern [list \
+      [file join $project_dir "app_shell_9p.gen" "sources_1" "bd" "app_shell_9p" "ipshared" "*" "opt_acc_core.sv"] \
+      [file join $project_dir "app_shell_9p.ip_user_files" "bd" "app_shell_9p" "ipshared" "*" "opt_acc_core.sv"]] {
+    foreach dst [glob -nocomplain $pattern] {
+      file copy -force $repo_optacc $dst
+      incr copied
+      puts "synced opt_acc_core.sv -> $dst"
+    }
+  }
+
+  foreach pattern [list \
+      [file join $project_dir "app_shell_9p.gen" "sources_1" "bd" "app_shell_9p" "ipshared" "*" "Top_vivado.sv"] \
+      [file join $project_dir "app_shell_9p.ip_user_files" "bd" "app_shell_9p" "ipshared" "*" "Top_vivado.sv"]] {
+    foreach dst [glob -nocomplain $pattern] {
+      file copy -force $repo_top $dst
+      incr copied
+      puts "synced Top_vivado.sv -> $dst"
+    }
+  }
+
+  if {$copied == 0} {
+    puts "WARNING: no opt_acc ipshared RTL copies found under $project_dir"
+  }
+}
+
 proc inject_optacc_xdc_into_run_tcl {run_tcl xdc_path project_dir ip_name} {
   if {![file exists $run_tcl]} {
     error "Run Tcl '$run_tcl' not found."
@@ -78,34 +121,34 @@ read_xdc __XDC__
   if {[string first $synth_anchor $data] < 0} {
     error "Unable to find synth_design anchor in '$run_tcl'."
   }
+  set xpm_warning_cfg {# Vendor xpm_memory_xdc.tcl emits Vivado 12-180 when its
+# primitive-cell query is evaluated before memory primitives are materialized.
+# Our own XDC uses -quiet queries, so demoting this message ID is safe here.
+set_msg_config -id {Vivado 12-180} -new_severity INFO
+}
   set read_xdc_line [string map [list \
       __BEGIN__ $begin_marker \
       __END__ $end_marker \
       __XDC__ $xdc_path] {__BEGIN__read_xdc __XDC__
 __END__}]
   set read_fp_ip_line {foreach ipxci [glob -nocomplain /home/hyyuan/workspace/opt_acc/fp_ip/*/*.xci] {
-  read_ip $ipxci
-  # Force global synthesis for fp_* IPs. This avoids the per-IP OOC checkpoint
-  # flow that later explodes into hundreds of derived *_in_context.xdc
-  # applications during the parent opt_acc_core synth.
-  catch {set_property generate_synth_checkpoint false [get_files $ipxci]}
+  set fp_file_obj [get_files -quiet $ipxci]
+  if {[llength $fp_file_obj] == 0} {
+    # Only add fp_* IPs that are still missing from the project fileset.
+    # This avoids Vivado 12-1504 spam while still allowing newly introduced IPs
+    # (for example fp_i2f_u31_sp_7) to participate in synthesis.
+    read_ip $ipxci
+    set fp_file_obj [get_files -quiet $ipxci]
+  }
+  catch {set_property generate_synth_checkpoint false $fp_file_obj}
 }
-set fp_ips [get_ips fp_*]
+set fp_ips [get_ips -quiet fp_*]
 if {[llength $fp_ips] > 0} {
   generate_target all $fp_ips
+  export_ip_user_files -of_objects $fp_ips -no_script -sync -force -quiet
   puts "Configured [llength $fp_ips] fp_* IPs for global synthesis (generate_synth_checkpoint=false)"
 }}
-  set read_wrapper_line [string map [list __IP__ $ip_name __PROJ__ $project_dir] {foreach f [concat \
-  [glob -nocomplain __PROJ__/app_shell_9p.ip_user_files/bd/app_shell_9p/ip/__IP__/sim/__IP__.sv] \
-  [glob -nocomplain __PROJ__/app_shell_9p.gen/sources_1/bd/app_shell_9p/ip/__IP__/sim/__IP__.sv] \
-  [glob -nocomplain __PROJ__/app_shell_9p.ip_user_files/bd/app_shell_9p/ipshared/*/opt_acc_core.sv] \
-  [glob -nocomplain __PROJ__/app_shell_9p.ip_user_files/bd/app_shell_9p/ipshared/*/Top_vivado.sv] \
-  [glob -nocomplain __PROJ__/app_shell_9p.gen/sources_1/bd/app_shell_9p/ipshared/*/opt_acc_core.sv] \
-  [glob -nocomplain __PROJ__/app_shell_9p.gen/sources_1/bd/app_shell_9p/ipshared/*/Top_vivado.sv]] {
-  read_verilog -sv $f
-}
-}]
-  set data [string map [list $synth_anchor "${read_xdc_line}${read_fp_ip_line}\n${read_wrapper_line}\n${synth_anchor}"] $data]
+  set data [string map [list $synth_anchor "${xpm_warning_cfg}\n${read_xdc_line}${read_fp_ip_line}\n${synth_anchor}"] $data]
 
   set reports_anchor "OPTRACE \"synth reports\" START { REPORT }\n"
   if {[string first $reports_anchor $data] < 0} {
@@ -209,6 +252,11 @@ puts "=== Regenerate IP output products ==="
 reset_target all $regen_obj
 generate_target all $regen_obj
 export_ip_user_files -of_objects $regen_obj -no_script -sync -force -quiet
+
+# generate_target/export_ip_user_files will repopulate the nested BD ipshared tree.
+# Re-apply the latest repo RTL *after* that step so the OOC run consumes the
+# freshest opt_acc_core.sv / Top_vivado.sv instead of regenerated stale copies.
+sync_optacc_rtl_into_project $project_dir
 
 puts "=== Apply synthesis run properties ==="
 set_property STEPS.SYNTH_DESIGN.ARGS.FLATTEN_HIERARCHY rebuilt $run

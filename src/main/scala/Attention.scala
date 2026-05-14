@@ -95,8 +95,17 @@ class Atten extends Module {
   // banks do not back up and stall the entire Attention input stream.
   val vToDm2Q = Module(new Queue(new Dm2Beat, 64))
   val input_ready = Wire(Bool())
+  val stage_ready = Wire(Bool())
+  val stage_fire = Wire(Bool())
+  val ingress_data = Reg(UInt(io.data_in.getWidth.W))
+  val ingress_st = RegInit(false.B)
+  val ingress_addr = Reg(UInt(io.data_addr.getWidth.W))
+  val ingress_last = RegInit(false.B)
+  val ingress_valid = RegInit(false.B)
+  // Register one QKV beat at the Attention ingress so the long
+  // qkvlinear->DM1/VCache route is cut without changing beat order.
   val input_fire = io.data_valid && input_ready
-  val dm1InputValid = Mux(io.dm1_override_enable, io.dm1_override_valid, input_fire)
+  val dm1InputValid = Mux(io.dm1_override_enable, io.dm1_override_valid, stage_fire)
   val cfgSeqlen = RegInit(0.U(log2Up(MAX_SEQLEN).W))
   val cfgPrefill = RegInit(false.B)
   val cfgSingleQuery = RegInit(false.B)
@@ -104,8 +113,8 @@ class Atten extends Module {
   val attnHeadDoneCnt = RegInit(0.U(log2Up(SINGLE_QUERY_BATCH).W))
   // Top 已经把 attention cfg 保持住；这里只在真正接到下一次 attention 请求首拍时才提交，
   // 避免上游提前切 cfg，把前一批仍在 DM1/Softmax/DM2 里的数据误按新模式解释。
-  val inputRequestStart = input_fire && io.data_in_st && !attnRequestActive
-  val inputHeadDone = input_fire && io.data_last
+  val inputRequestStart = stage_fire && ingress_st && !attnRequestActive
+  val inputHeadDone = stage_fire && ingress_last
   val inputRequestDone = inputHeadDone && attnHeadDoneCnt === (SINGLE_QUERY_BATCH - 1).U
   when(inputRequestStart) {
     cfgSeqlen := io.cfg_seqlen
@@ -134,11 +143,11 @@ class Atten extends Module {
   dm1.io.cfg_single_query := attnCfgSingleQuery
   dm1.io.out_scale := io.dm1_out_scale
 
-  dm1.io.data_in_st := Mux(io.dm1_override_enable, io.dm1_override_st, input_fire && io.data_in_st)
-  dm1.io.data_in := Mux(io.dm1_override_enable, io.dm1_override_data, io.data_in(2*LOAD_VECNUM * DATAW - 1 , 0)) // QK数据
-  dm1.io.data_addr := Mux(io.dm1_override_enable, io.dm1_override_addr, io.data_addr)
+  dm1.io.data_in_st := Mux(io.dm1_override_enable, io.dm1_override_st, stage_fire && ingress_st)
+  dm1.io.data_in := Mux(io.dm1_override_enable, io.dm1_override_data, ingress_data(2*LOAD_VECNUM * DATAW - 1 , 0)) // QK数据
+  dm1.io.data_addr := Mux(io.dm1_override_enable, io.dm1_override_addr, ingress_addr)
   dm1.io.data_valid := dm1InputValid
-  dm1.io.data_last := Mux(io.dm1_override_enable, io.dm1_override_last, input_fire && io.data_last)
+  dm1.io.data_last := Mux(io.dm1_override_enable, io.dm1_override_last, stage_fire && ingress_last)
   dm1.io.res_ready := softmax.io.data_ready
   io.dm1_override_ready := dm1.io.data_ready
 
@@ -184,11 +193,11 @@ class Atten extends Module {
   vcache.io.cfg_seqlen := attnCfgSeqlen
   vcache.io.cfg_prefill := attnCfgPrefill
   vcache.io.cfg_single_query := attnCfgSingleQuery
-  vcache.io.data_in_st := input_fire && io.data_in_st
-  vcache.io.data_in := io.data_in(3 * LOAD_VECNUM * DATAW - 1, 2 * LOAD_VECNUM * DATAW) // V数据
-  vcache.io.data_in_addr := io.data_addr
-  vcache.io.data_in_valid := input_fire
-  vcache.io.data_in_last := input_fire && io.data_last
+  vcache.io.data_in_st := stage_fire && ingress_st
+  vcache.io.data_in := ingress_data(3 * LOAD_VECNUM * DATAW - 1, 2 * LOAD_VECNUM * DATAW) // V数据
+  vcache.io.data_in_addr := ingress_addr
+  vcache.io.data_in_valid := stage_fire
+  vcache.io.data_in_last := stage_fire && ingress_last
   vcache.io.res_ready := Mux(io.dm2_v_override_enable, true.B, vToDm2Q.io.enq.ready)
 
   vToDm2Q.io.enq.valid := !io.dm2_v_override_enable && vcache.io.res_valid
@@ -224,7 +233,18 @@ class Atten extends Module {
   // ========================================
   // 输出连接
   // ========================================
-  input_ready := vcache.io.data_in_ready && Mux(io.dm1_override_enable, true.B, dm1.io.data_ready)
+  stage_ready := vcache.io.data_in_ready && Mux(io.dm1_override_enable, true.B, dm1.io.data_ready)
+  stage_fire := ingress_valid && stage_ready
+  input_ready := !ingress_valid || stage_ready
+  when(input_ready) {
+    ingress_valid := io.data_valid
+  }
+  when(input_fire) {
+    ingress_data := io.data_in
+    ingress_st := io.data_in_st
+    ingress_addr := io.data_addr
+    ingress_last := io.data_last
+  }
   io.data_ready := input_ready
 
   io.res := dm2.io.res

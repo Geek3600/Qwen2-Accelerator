@@ -68,7 +68,47 @@ class XilinxUramCompatMem(val depth: Int, val width: Int) extends Module {
 
   val readValid = RegNext(io.read_en, false.B)
 
-  if (FpBackend.useVivadoIp) {
+  if (FpBackend.useVivadoIp && width == 72 && depth > 4096 && depth <= 8192) {
+    val segDepth = 4096
+    val segAddrWidth = log2Ceil(segDepth)
+    val lowMem = Module(new XpmUramSimpleDualPort(segDepth, width))
+    val highMem = Module(new XpmUramSimpleDualPort(segDepth, width))
+    val writeHigh = io.write_addr >= segDepth.U(addrWidth.W)
+    val readHigh = io.read_addr >= segDepth.U(addrWidth.W)
+    val readHighR = RegNext(readHigh, false.B)
+    val writeAddr = io.write_addr(segAddrWidth - 1, 0)
+    val readAddr = io.read_addr(segAddrWidth - 1, 0)
+
+    lowMem.io.sleep := false.B
+    lowMem.io.clka := clock
+    lowMem.io.ena := io.write_en && !writeHigh
+    lowMem.io.wea := io.write_en && !writeHigh
+    lowMem.io.addra := writeAddr
+    lowMem.io.dina := io.write_data
+    lowMem.io.injectsbiterra := false.B
+    lowMem.io.injectdbiterra := false.B
+    lowMem.io.clkb := clock
+    lowMem.io.rstb := false.B
+    lowMem.io.enb := io.read_en && !readHigh
+    lowMem.io.regceb := true.B
+    lowMem.io.addrb := readAddr
+
+    highMem.io.sleep := false.B
+    highMem.io.clka := clock
+    highMem.io.ena := io.write_en && writeHigh
+    highMem.io.wea := io.write_en && writeHigh
+    highMem.io.addra := writeAddr
+    highMem.io.dina := io.write_data
+    highMem.io.injectsbiterra := false.B
+    highMem.io.injectdbiterra := false.B
+    highMem.io.clkb := clock
+    highMem.io.rstb := false.B
+    highMem.io.enb := io.read_en && readHigh
+    highMem.io.regceb := true.B
+    highMem.io.addrb := readAddr
+
+    io.read_data := Mux(readValid, Mux(readHighR, highMem.io.doutb, lowMem.io.doutb), 0.U)
+  } else if (FpBackend.useVivadoIp) {
     val mem = Module(new XpmUramSimpleDualPort(depth, width))
     mem.io.sleep := false.B
     mem.io.clka := clock

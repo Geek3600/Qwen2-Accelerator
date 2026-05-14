@@ -128,6 +128,14 @@ sync_project() {
     "${REPO_ROOT}/scripts/verification/run_vcs_server.sh" \
     "${REMOTE_TARGET}:${REMOTE_WORKDIR}/scripts/verification/run_vcs_server.sh"
 
+  if [[ -d "${REPO_ROOT}/scripts/synthesis" ]]; then
+    remote_bash "mkdir -p scripts/synthesis"
+    rsync -az --delete \
+      -e "ssh ${SSH_OPTS[*]}" \
+      "${REPO_ROOT}/scripts/synthesis/" \
+      "${REMOTE_TARGET}:${REMOTE_WORKDIR}/scripts/synthesis/"
+  fi
+
   rsync -az --delete \
     -e "ssh ${SSH_OPTS[*]}" \
     "${REPO_ROOT}/verification/cases/opt125m_stage_full/" \

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-REMOTE_HOST="${REMOTE_HOST:-hyyuan@10.12.133.23}"
+REMOTE_HOST="${REMOTE_HOST:-hyyuan@10.12.133.79}"
 REMOTE_PORT="${REMOTE_PORT:-22}"
 REMOTE_PROJECT="${REMOTE_PROJECT:-/home/hyyuan/workspace/v6.0_9p_cnn_2slr_4core_yolov8/v6.0_9p_cnn_v0825/app_shell_9p.xpr}"
 REMOTE_TCL="${REMOTE_TCL:-/tmp/fix_opt_acc_core_ooc_run.tcl}"

@@ -1,4 +1,6 @@
 #include "Vopt_acc_core.h"
+#include "Vopt_acc_core_Fp32DivSqrt.h"
+#include "Vopt_acc_core_LayerNormQ.h"
 #include "Vopt_acc_core___024root.h"
 #include "common.hpp"
 #include "verilated_save.h"
@@ -135,6 +137,7 @@ int main(int argc, char** argv) {
     const bool debug = std::getenv("OPTACC_DEBUG") != nullptr;
     const bool wavefront_debug =
         debug || (std::getenv("OPTACC_WAVEFRONT") != nullptr);
+    const bool qkv_trace = std::getenv("OPTACC_TRACE_QKV") != nullptr;
     const char* save_checkpoint_path = std::getenv("OPTACC_SAVE_CHECKPOINT");
     const int save_checkpoint_layer = []() -> int {
       if (const char* raw = std::getenv("OPTACC_SAVE_CHECKPOINT_LAYER")) {
@@ -350,6 +353,21 @@ int main(int argc, char** argv) {
     int prev_layer = -1;
     int prev_run_token = -1;
     int prev_result_count = -1;
+    uint64_t qkv_fire_count = 0;
+    uint64_t qkv_last_count = 0;
+    uint64_t qkvq_enq_count = 0;
+    uint64_t qkvq_deq_count = 0;
+    uint64_t ln_addr_fire_count = 0;
+    uint64_t ln_addr_valid_count = 0;
+    uint64_t ln1_in_count = 0;
+    uint64_t ln1_out_count = 0;
+    uint64_t qkv_collect_count = 0;
+    uint64_t dm1_in_count = 0;
+    uint64_t dm1_last_count = 0;
+    uint64_t ctx_enq_count = 0;
+    uint64_t v_enq_count = 0;
+    uint64_t attn_out_count = 0;
+    uint64_t outlinear_out_count = 0;
     bool checkpoint_saved = false;
 
     if (restore_checkpoint_path != nullptr && restore_checkpoint_path[0] != '\0') {
@@ -434,6 +452,158 @@ int main(int argc, char** argv) {
         b_pending = false;
       }
 
+      {
+        auto* root = dut.rootp;
+        auto* ln1 = root->__PVT__opt_acc_core__DOT__u_core__DOT__layernorm;
+        const bool ln_addr_fire =
+            root->opt_acc_core__DOT__u_core__DOT__ln_addr_gen__DOT__unnamedblk1__DOT__fire;
+        const bool ln_addr_valid =
+            root->opt_acc_core__DOT__u_core__DOT__ln_addr_gen__DOT__io_data_valid_REG;
+        const bool ln1_in = ln1->io_data_valid && ln1->io_data_ready;
+        const bool ln1_out = ln1->io_res_valid;
+        const bool qkv_collect =
+            root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__collect_fire;
+        const bool qkv_fire =
+            root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__output_fire;
+        const bool qkv_last =
+            qkv_fire &&
+            root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__outputCntReg == 31 &&
+            root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__token_last;
+        const bool qkvq_enq =
+            root->opt_acc_core__DOT__u_core__DOT__qkvToAttnQ__DOT__do_enq;
+        const bool qkvq_deq =
+            root->opt_acc_core__DOT__u_core__DOT__qkvToAttnQ__DOT__unnamedblk1__DOT__do_deq;
+        const bool dm1_in = qkvq_deq;
+        const bool dm1_last =
+            dm1_in &&
+            root->opt_acc_core__DOT__u_core__DOT__atten__DOT____Vcellinp__dm1__io_data_last;
+        const bool ctx_enq =
+            root->opt_acc_core__DOT__u_core__DOT__atten__DOT__ctxToDm2Q__DOT__do_enq;
+        const bool v_enq =
+            root->opt_acc_core__DOT__u_core__DOT__atten__DOT__vToDm2Q__DOT__do_enq;
+        const bool attn_out =
+            root->opt_acc_core__DOT__u_core__DOT__attnToOutQ__DOT__do_enq;
+        const bool outlinear_out =
+            root->opt_acc_core__DOT__u_core__DOT__outToResQ__DOT__do_enq;
+
+        qkv_fire_count += qkv_fire ? 1 : 0;
+        qkv_last_count += qkv_last ? 1 : 0;
+        qkvq_enq_count += qkvq_enq ? 1 : 0;
+        qkvq_deq_count += qkvq_deq ? 1 : 0;
+        ln_addr_fire_count += ln_addr_fire ? 1 : 0;
+        ln_addr_valid_count += ln_addr_valid ? 1 : 0;
+        ln1_in_count += ln1_in ? 1 : 0;
+        ln1_out_count += ln1_out ? 1 : 0;
+        qkv_collect_count += qkv_collect ? 1 : 0;
+        dm1_in_count += dm1_in ? 1 : 0;
+        dm1_last_count += dm1_last ? 1 : 0;
+        ctx_enq_count += ctx_enq ? 1 : 0;
+        v_enq_count += v_enq ? 1 : 0;
+        attn_out_count += attn_out ? 1 : 0;
+        outlinear_out_count += outlinear_out ? 1 : 0;
+
+        if (qkv_trace &&
+            (qkv_last || (qkv_fire && qkv_fire_count <= 8) || dm1_last ||
+             attn_out || outlinear_out ||
+             (ln_addr_fire && ln_addr_fire_count <= 8) ||
+             (ln1_out && ln1_out_count <= 8) ||
+             (cycle % wavefront_stride) == 0ULL)) {
+          std::cerr << "optacc qkv-trace"
+                    << " cycle=" << cycle
+                    << " top_state=" << static_cast<int>(root->opt_acc_core__DOT__state)
+                    << " layer=" << static_cast<int>(root->opt_acc_core__DOT__layer_idx)
+                    << " run1=" << static_cast<int>(root->opt_acc_core__DOT__core_run_sync1)
+                    << " run2=" << static_cast<int>(root->opt_acc_core__DOT__core_run_sync2)
+                    << " cfg_p=" << static_cast<int>(root->opt_acc_core__DOT__core_cfg_valid_pulse_r)
+                    << " layer_p=" << static_cast<int>(root->opt_acc_core__DOT__core_layer_st_pulse_r)
+                    << " ln_addr_fire=" << static_cast<int>(ln_addr_fire)
+                    << " ln_addr_fire_n=" << ln_addr_fire_count
+                    << " ln_addr_valid_n=" << ln_addr_valid_count
+                    << " ln_addr_state=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__ln_addr_gen__DOT__state)
+                    << " ln_start_pending=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__ln_addr_gen__DOT__start_pending)
+                    << " ln_vec_addr=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__ln_addr_gen__DOT__vec_cnt_r)
+                    << " ln_pref=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__ln_addr_gen__DOT__prefill_cnt_r)
+                    << " ln_batch=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__ln_addr_gen__DOT__batch_cnt_r)
+                    << " ln_adapter_ready=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT____Vcellinp__ln_addr_gen__io_adapter_ready)
+                    << " ln_in_n=" << ln1_in_count
+                    << " ln_out_n=" << ln1_out_count
+                    << " ln_state=" << static_cast<int>(ln1->__PVT__state)
+                    << " ln_data_v=" << static_cast<int>(ln1->io_data_valid)
+                    << " ln_data_r=" << static_cast<int>(ln1->io_data_ready)
+                    << " ln_data_last=" << static_cast<int>(ln1->io_data_last)
+                    << " ln_data_addr=" << static_cast<int>(ln1->io_data_addr)
+                    << " ln_out=" << static_cast<int>(ln1_out)
+                    << " ln_out_last=" << static_cast<int>(ln1->io_res_last)
+                    << " ln_out_addr=" << static_cast<int>(ln1->io_res_addr)
+                    << " ln_input_loaded=" << static_cast<int>(ln1->__PVT__inputLoaded)
+                    << " ln_weights=" << static_cast<int>(ln1->__PVT__weightsLoaded)
+                    << " ln_token=" << static_cast<int>(ln1->__PVT__tokenIdx)
+                    << " ln_vec=" << static_cast<int>(ln1->__PVT__vecIdx)
+                    << " ln_var=0x" << std::hex << ln1->__PVT__varReg << std::dec
+                    << " ln_sqrt_reg=0x" << std::hex << ln1->__PVT__sqrtReg << std::dec
+                    << " ln_invstd=0x" << std::hex << ln1->__PVT__invStdReg << std::dec
+                    << " sqrt_v=" << static_cast<int>(ln1->__PVT__sqrt_io_inValid)
+                    << " sqrt_r=" << static_cast<int>(ln1->__PVT__sqrt->io_inReady)
+                    << " sqrt_ov=" << static_cast<int>(ln1->__PVT__sqrt->__PVT__io_outValidSqrt)
+                    << " sqrt_cyc=" << static_cast<int>(
+                           ln1->__PVT__sqrt->__PVT__sqrt__DOT__core__DOT__divSqrt__DOT__divSqrtRecFNToRaw__DOT__divSqrtRawFN__DOT__cycleNum)
+                    << " sqrt_raw_ov=" << static_cast<int>(
+                           ln1->__PVT__sqrt->__PVT__sqrt__DOT__core__DOT__divSqrt__DOT__divSqrtRecFNToRaw__DOT__divSqrtRawFN__DOT__rawOutValid)
+                    << " sqrt_raw_r=" << static_cast<int>(
+                           ln1->__PVT__sqrt->__PVT__sqrt__DOT__core__DOT__divSqrt__DOT__divSqrtRecFNToRaw__DOT__divSqrtRawFN__DOT__inReady)
+                    << " div_v=" << static_cast<int>(ln1->__PVT__div_io_inValid)
+                    << " div_r=" << static_cast<int>(ln1->__PVT__div->io_inReady)
+                    << " div_ov=" << static_cast<int>(ln1->__PVT__div->io_outValidDiv)
+                    << " div_cyc=" << static_cast<int>(
+                           ln1->__PVT__div->__PVT__div__DOT__core__DOT__divSqrt__DOT__divSqrtRecFNToRaw__DOT__divSqrtRawFN__DOT__cycleNum)
+                    << " div_raw_ov=" << static_cast<int>(
+                           ln1->__PVT__div->__PVT__div__DOT__core__DOT__divSqrt__DOT__divSqrtRecFNToRaw__DOT__divSqrtRawFN__DOT__rawOutValid)
+                    << " div_raw_r=" << static_cast<int>(
+                           ln1->__PVT__div->__PVT__div__DOT__core__DOT__divSqrt__DOT__divSqrtRecFNToRaw__DOT__divSqrtRawFN__DOT__inReady)
+                    << " qkv_collect=" << static_cast<int>(qkv_collect)
+                    << " qkv_collect_n=" << qkv_collect_count
+                    << " qkv_mem_full=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__mem_inst__DOT__full_cnt_r)
+                    << " qkv_fire=" << static_cast<int>(qkv_fire)
+                    << " qkv_fire_n=" << qkv_fire_count
+                    << " qkv_last_n=" << qkv_last_count
+                    << " qkv_state=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__state)
+                    << " qkv_head=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__headCntReg)
+                    << " qkv_pref=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__prefillCntReg)
+                    << " qkv_batch=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__batchCntReg)
+                    << " qkv_out=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__outputCntReg)
+                    << " token_last=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__token_last)
+                    << " head_last=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__head_last)
+                    << " all_done=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__all_output_done)
+                    << " shadow=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__shadowValidReg)
+                    << " pf_busy=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__prefetchBusyReg)
+                    << " pf_step=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__prefetchStepReg)
+                    << " q_enq_n=" << qkvq_enq_count
+                    << " q_deq_n=" << qkvq_deq_count
+                    << " q_empty=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvToAttnQ__DOT__empty)
+                    << " q_full=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvToAttnQ__DOT__maybe_full)
+                    << " attn_rdy=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT___atten_io_data_ready)
+                    << " ingress_valid=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__atten__DOT__ingress_valid)
+                    << " attn_active=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__atten__DOT__attnRequestActive)
+                    << " attn_done_heads=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__atten__DOT__attnHeadDoneCnt)
+                    << " dm1_in_n=" << dm1_in_count
+                    << " dm1_last_n=" << dm1_last_count
+                    << " dm1_state=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__atten__DOT__dm1__DOT__cu_inst__DOT__state)
+                    << " dm1_hvec=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__atten__DOT__dm1__DOT__cu_inst__DOT__headvec_cnt)
+                    << " softmax_state=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__atten__DOT__softmax__DOT__state)
+                    << " ctx_enq_n=" << ctx_enq_count
+                    << " ctx_deq=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__atten__DOT__ctxToDm2Q__DOT__unnamedblk1__DOT__do_deq)
+                    << " ctx_empty=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__atten__DOT__ctxToDm2Q__DOT__empty)
+                    << " v_enq_n=" << v_enq_count
+                    << " v_deq=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__atten__DOT__vToDm2Q__DOT__unnamedblk1__DOT__do_deq)
+                    << " v_empty=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__atten__DOT__vToDm2Q__DOT__empty)
+                    << " dm2_state=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__atten__DOT__dm2__DOT__dmInst__DOT__state)
+                    << " dm2_mul=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__atten__DOT__dm2__DOT__dmInst__DOT__mulCnt)
+                    << " attn_out_n=" << attn_out_count
+                    << " outlinear_out_n=" << outlinear_out_count
+                    << std::endl;
+        }
+      }
+
       if (!checkpoint_saved &&
           save_checkpoint_path != nullptr &&
           save_checkpoint_path[0] != '\0' &&
@@ -488,7 +658,6 @@ int main(int argc, char** argv) {
                   << " ffnup_addr=" << root->opt_acc_core__DOT__u_core__DOT__ffnup__DOT___lu_inst_io_data_in_addr
                   << " ffndown_st=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__ffndown__DOT__cu_inst__DOT__state)
                   << " ffndown_addr=" << root->opt_acc_core__DOT__u_core__DOT__ffndown__DOT___lu_inst_io_data_in_addr
-                  << " top_in_addr=" << root->opt_acc_core__DOT__core_data_in_addr
                   << std::endl;
       }
 
@@ -502,7 +671,6 @@ int main(int argc, char** argv) {
                   << " issue=" << root->opt_acc_core__DOT__issue_count
                   << " recv=" << root->opt_acc_core__DOT__recv_count
                   << " cur_len=" << root->opt_acc_core__DOT__cur_len
-                  << " cur_base=" << static_cast<unsigned long long>(root->opt_acc_core__DOT__cur_base_addr)
                   << " preload_wait=" << static_cast<int>(root->opt_acc_core__DOT__preload_full_wait)
                   << " preload_layer=" << static_cast<int>(root->opt_acc_core__DOT__preload_layer_idx)
                   << " pending_sw=" << static_cast<int>(root->opt_acc_core__DOT__pending_layer_switch)
@@ -536,13 +704,11 @@ int main(int argc, char** argv) {
                   << " dm2_head=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__atten__DOT__dm2__DOT__decodeHeadCnt)
                   << " out_rdy=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT___outlinear_io_data_ready)
                   << " ffndown_rdy=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT___ffndown_io_data_ready)
-                  << " qkv_out_v=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT___qkvlinear_io_data_out_valid)
-                  << " qkv_out_last=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT___qkvlinear_io_data_out_last)
                   << " qkv_st=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__state)
-                  << " qkv_head=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__head_cnt_r)
-                  << " qkv_batch=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__batch_cnt_r)
-                  << " qkv_pref=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__prefill_cnt_r)
-                  << " qkv_outcnt=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__output_cnt_r)
+                  << " qkv_head=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__headCntReg)
+                  << " qkv_batch=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__batchCntReg)
+                  << " qkv_pref=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__prefillCntReg)
+                  << " qkv_outcnt=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT__outputCntReg)
                   << " qkv_addr=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__qkvlinear__DOT___lu_inst_io_data_in_addr)
                   << " out_st=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__outlinear__DOT__state)
                   << " out_addr=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__outlinear__DOT___lu_inst_io_data_in_addr)
@@ -550,7 +716,6 @@ int main(int argc, char** argv) {
                   << " ffnup_addr=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__ffnup__DOT___lu_inst_io_data_in_addr)
                   << " ffndown_st=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__ffndown__DOT__cu_inst__DOT__state)
                   << " ffndown_addr=" << static_cast<int>(root->opt_acc_core__DOT__u_core__DOT__ffndown__DOT___lu_inst_io_data_in_addr)
-                  << " top_in_addr=" << root->opt_acc_core__DOT__core_data_in_addr
                   << std::endl;
       }
 

@@ -116,6 +116,7 @@ create_i2f_ip fp_i2f_s32_sp_7 32 $ip_dir
 create_i2f_ip fp_i2f_u8_sp_7 8 $ip_dir
 create_i2f_ip fp_i2f_u18_sp_7 18 $ip_dir
 create_i2f_ip fp_i2f_u26_sp_7 26 $ip_dir
+create_i2f_ip fp_i2f_u31_sp_7 31 $ip_dir
 create_i2f_ip fp_i2f_u36_sp_7 36 $ip_dir
 
 create_f2i_ip fp_f2i_s8_sp_7 8 $ip_dir

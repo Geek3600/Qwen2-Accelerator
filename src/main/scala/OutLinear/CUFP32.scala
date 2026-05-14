@@ -117,13 +117,19 @@ class CUFP32 extends Module {
     }
   }
 
-  val batchsize_cnt = Wire(UInt(log2Up(BATCHSIZE).W))
+  val batchsizeCntReg = RegInit(0.U(log2Up(BATCHSIZE).W))
+  val batchsize_cnt = batchsizeCntReg
   val batchsize_last = batchsize_cnt === actual_batchsize
-  batchsize_cnt := RegEnable(Mux(batchsize_last, 0.U, batchsize_cnt + 1.U), 0.U, io.data_in_valid)
+  when(io.data_in_valid) {
+    batchsizeCntReg := Mux(batchsize_last, 0.U, batchsizeCntReg + 1.U)
+  }
 
-  val block_cnt = Wire(UInt(log2Up(ROWBLOCK).W))
+  val blockCntReg = RegInit(0.U(log2Up(ROWBLOCK).W))
+  val block_cnt = blockCntReg
   val block_last = block_cnt === (ROWBLOCK - 1).U
-  block_cnt := RegEnable(Mux(block_last, 0.U, block_cnt + 1.U), 0.U, batchsize_last && io.data_in_valid)
+  when(batchsize_last && io.data_in_valid) {
+    blockCntReg := Mux(block_last, 0.U, blockCntReg + 1.U)
+  }
 
   val input_delay = 2
   val indata_pipreg = Module(new PipReg(input_delay, MEM_WIDTH))
@@ -181,8 +187,11 @@ class CUFP32 extends Module {
   val cnt_batchsize_pipout = cnt_batchsize_pipreg.io.out
   val psum_valid_pipout = psum_valid_pipreg.io.out.asBool
   val psum_last_pipout = psum_last_pipreg.io.out.asBool
-  val psum_sel = Wire(Bool())
-  psum_sel := RegEnable(~psum_sel, false.B, psum_valid_pipout && psum_last_pipout)
+  val psumSelReg = RegInit(false.B)
+  val psum_sel = psumSelReg
+  when(psum_valid_pipout && psum_last_pipout) {
+    psumSelReg := !psumSelReg
+  }
 
   // Decode token boundaries can present the first block while the old psum bank
   // select is still settling. Clear the write bank at the first block of each
@@ -217,9 +226,11 @@ class CUFP32 extends Module {
     out_bank_sel := psum_sel
   }
   val res_vector_num = (COL + ROW - 1) / ROW
-  val res_vector_cnt = Wire(UInt(log2Up(res_vector_num).W))
+  val resVectorCntReg = RegInit(0.U(log2Up(res_vector_num).W))
+  val res_vector_cnt = resVectorCntReg
   val res_vector_last = res_vector_cnt === (res_vector_num - 1).U
-  val res_batchsize_cnt = Wire(UInt(log2Up(BATCHSIZE).W))
+  val resBatchsizeCntReg = RegInit(0.U(log2Up(BATCHSIZE).W))
+  val res_batchsize_cnt = resBatchsizeCntReg
   val res_batchsize_last = res_batchsize_cnt === actual_batchsize
 
   val idle :: buzy :: Nil = Enum(2)
@@ -231,8 +242,12 @@ class CUFP32 extends Module {
   val buzy_mux = Mux(res_done, Mux(send_st, buzy, idle), buzy)
   state := Mux(is_idle, idle_mux, buzy_mux)
 
-  res_vector_cnt := RegEnable(Mux(res_vector_last, 0.U, res_vector_cnt + 1.U), 0.U, is_buzy)
-  res_batchsize_cnt := RegEnable(Mux(res_batchsize_last, 0.U, res_batchsize_cnt + 1.U), 0.U, is_buzy && res_vector_last)
+  when(is_buzy) {
+    resVectorCntReg := Mux(res_vector_last, 0.U, resVectorCntReg + 1.U)
+    when(res_vector_last) {
+      resBatchsizeCntReg := Mux(res_batchsize_last, 0.U, resBatchsizeCntReg + 1.U)
+    }
+  }
 
   val psum0_token = MuxLookup(res_batchsize_cnt, 0.U((COL * INT32_WIDTH).W))(
     (0 until BATCHSIZE).map { i => i.U -> Cat(psums0(i).reverse.map(_.asUInt)) }

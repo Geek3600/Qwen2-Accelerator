@@ -36,25 +36,74 @@ class WeightMem extends Module {
   )
 
   val legacyWrite = io.init_mode && io.init_wen
-  val preloadWrite = io.preload_valid
+  val preloadValidR = RegNext(io.preload_valid, false.B)
+  // These staged payload regs are only sampled under preloadValid/writeFire, so
+  // they do not need reset. Leaving them unreset avoids dragging long reset
+  // trees onto large data buses and write controls.
+  val preloadBankR = Reg(Bool())
+  val preloadAddrR = Reg(UInt(log2Up(WMEM_DEPTH).W))
+  val preloadDataR = Reg(UInt(WMEM_WIDTH.W))
+  val preloadColBlockR = RegInit(0.U(log2Up(COLBLOCK).W))
+  val preloadRowSelR = RegInit(0.U(log2Up(ROW).W))
+  val preloadRowBlockR = RegInit(0.U(log2Up(ROWBLOCK).W))
+  val preloadTileAddrR = RegInit(0.U(log2Up(TILE_DEPTH).W))
+  when(io.preload_valid) {
+    preloadBankR := io.preload_bank
+    preloadAddrR := io.preload_addr
+    preloadDataR := io.preload_data
+    when(io.preload_addr === 0.U) {
+      preloadColBlockR := 0.U
+      preloadRowSelR := 0.U
+      preloadRowBlockR := 0.U
+      preloadTileAddrR := 0.U
+    }.elsewhen(preloadColBlockR === (COLBLOCK - 1).U) {
+      preloadColBlockR := 0.U
+      when(preloadRowSelR === (ROW - 1).U) {
+        preloadRowSelR := 0.U
+        preloadRowBlockR := preloadRowBlockR + 1.U
+        preloadTileAddrR := preloadRowBlockR + 1.U
+      }.otherwise {
+        preloadRowSelR := preloadRowSelR + 1.U
+        preloadTileAddrR := preloadRowBlockR
+      }
+    }.otherwise {
+      preloadColBlockR := preloadColBlockR + 1.U
+      preloadTileAddrR := preloadTileAddrR + ROWBLOCK.U
+    }
+  }
+  val preloadWrite = preloadValidR
   assert(!(legacyWrite && preloadWrite), "OutLinear WeightMem legacy init and preload collided")
 
-  val writeBank = Mux(preloadWrite, io.preload_bank, false.B)
-  val writeAddr = Mux(preloadWrite, io.preload_addr, io.init_addr)
-  val writeData = Mux(preloadWrite, io.preload_data, io.init_data)
+  val writeBank = Mux(preloadWrite, preloadBankR, false.B)
+  val writeAddr = Mux(preloadWrite, preloadAddrR, io.init_addr)
+  val writeData = Mux(preloadWrite, preloadDataR, io.init_data)
   val writeFire = legacyWrite || preloadWrite
-  val writeColBlock = writeAddr % COLBLOCK.U
-  val writeRowLinear = writeAddr / COLBLOCK.U
-  val writeRowSel = writeRowLinear % ROW.U
-  val writeRowBlock = writeRowLinear / ROW.U
-  val writeTileAddr = writeColBlock * ROWBLOCK.U + writeRowBlock
+  val legacyWriteColBlock = io.init_addr % COLBLOCK.U
+  val legacyWriteRowLinear = io.init_addr / COLBLOCK.U
+  val legacyWriteRowSel = legacyWriteRowLinear % ROW.U
+  val legacyWriteRowBlock = legacyWriteRowLinear / ROW.U
+  val legacyWriteTileAddr = legacyWriteColBlock * ROWBLOCK.U + legacyWriteRowBlock
+  val writeRowSel = Mux(preloadWrite, preloadRowSelR, legacyWriteRowSel)
+  val writeTileAddr = Mux(preloadWrite, preloadTileAddrR, legacyWriteTileAddr)
+  val memWriteBankR = Reg(Bool())
+  val memWriteTileAddrR = Reg(UInt(log2Up(TILE_DEPTH).W))
+  val memWriteDataR = Reg(UInt(WMEM_WIDTH.W))
+  val memWriteRowEnR = Reg(Vec(ROW, Bool()))
+  when(writeFire) {
+    memWriteBankR := writeBank
+    memWriteTileAddrR := writeTileAddr
+    memWriteDataR := writeData
+  }
+  for (b <- 0 until ROW) {
+    memWriteRowEnR(b) := writeFire && writeRowSel === b.U
+  }
 
   for (copy <- 0 until 2) {
     for (b <- 0 until ROW) {
       for (s <- 0 until NUM_SLICES) {
-        weight_banks(copy)(b)(s).io.write_en := writeFire && writeBank === (copy == 1).B && writeRowSel === b.U
-        weight_banks(copy)(b)(s).io.write_addr := writeTileAddr
-        weight_banks(copy)(b)(s).io.write_data := writeData((s + 1) * SLICE_WIDTH - 1, s * SLICE_WIDTH)
+        weight_banks(copy)(b)(s).io.write_en := memWriteRowEnR(b) && memWriteBankR === (copy == 1).B
+        weight_banks(copy)(b)(s).io.write_addr := memWriteTileAddrR
+        weight_banks(copy)(b)(s).io.write_data := memWriteDataR((s + 1) * SLICE_WIDTH - 1, s * SLICE_WIDTH)
         weight_banks(copy)(b)(s).io.read_en := io.read_en
         weight_banks(copy)(b)(s).io.read_addr := io.read_addr
       }

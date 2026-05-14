@@ -357,3 +357,43 @@ project/plugins/project/
 
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
+
+# Large local model/data artifacts
+weight/
+logs/
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Local Codex metadata
+.codex
+.codex/
+
+# Board driver local build artifacts and binaries
+mimic_driver/**/*.o
+mimic_driver/**/*.ko
+mimic_driver/**/*.mod
+mimic_driver/**/*.mod.c
+mimic_driver/**/*.cmd
+mimic_driver/**/.cache.mk
+mimic_driver/**/modules.order
+mimic_driver/**/*.so
+mimic_driver/**/*.so.*
+mimic_driver/**/*.log
+mimic_driver/test/flash_program/BOOT.BIN
+mimic_driver/test/flash_program/zynqmp_fsbl.elf
+mimic_driver/test/*/fpga_*
+mimic_driver/test/*/pcie_reset
+mimic_driver/test/*/flash_program
+mimic_driver/test/*/get_fpga_num
+mimic_driver/xdma_driver/tools/dma_from_device
+mimic_driver/xdma_driver/tools/dma_to_device
+mimic_driver/xdma_driver/tools/performance
+mimic_driver/xdma_driver/tools/reg_rw
+mimic_driver/xdma_driver/tools/test_chrdev
+mimic_driver/xdma_driver/tests/data/*.bin
+mimic_driver/xdma_driver/tests/data/output_*.bin
+mimic_driver/**/Module.symvers
+mimic_driver/xdma_driver/tests/hw_log_*.txt

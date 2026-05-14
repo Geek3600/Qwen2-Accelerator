@@ -1024,6 +1024,10 @@ def prepare_all_layers_9p_fullseq_case(case_dir: Path, out_dir: Path) -> None:
             layer_stride_beats = sum(pack_into_ddr_words(words).shape[0] for _, words in layer_regions)
         ddr_regions.extend(layer_regions)
 
+    output_scratch_beats = token_count_full * 64
+    output_guard_beats = 1024
+    ddr_regions.append(("output_scratch", np.zeros((output_scratch_beats + output_guard_beats, 16), dtype=np.uint32)))
+
     ddr_image, ddr_bases = build_ddr_image(ddr_regions)
     write_words(artifacts / "ddr_image.u32.bin", ddr_image)
     write_words(artifacts / "golden.u32.bin", pack_fp32_rows(top_out, LANES))
@@ -1037,6 +1041,9 @@ def prepare_all_layers_9p_fullseq_case(case_dir: Path, out_dir: Path) -> None:
         "layer_count": len(layer_dirs),
         "ddr_layers_base_addr": ddr_bases["ddr_layer0_scalars_base_addr"],
         "ddr_layer_stride_beats": layer_stride_beats,
+        "ddr_output_scratch_base_addr": ddr_bases["ddr_output_scratch_base_addr"],
+        "ddr_output_scratch_beats": output_scratch_beats,
+        "ddr_output_guard_beats": output_guard_beats,
         "ln1_out_inv_scale_u32": int(layer_scalar_rows[0][0]),
         "ln1_out_zero_point_s8": int(layer_scalar_rows[0][1] & 0xFF),
         "q_out_inv_scale_u32": int(layer_scalar_rows[0][2]),
@@ -1063,7 +1070,7 @@ def prepare_all_layers_9p_fullseq_case(case_dir: Path, out_dir: Path) -> None:
         "axi_data_bytes": BOARD_AXI_DATA_BYTES,
         "axi_line_bytes": BOARD_AXI_LINE_BYTES,
         "axi_input_base_addr": BOARD_AXI_C0_BASE_ADDR + ddr_bases["ddr_input_base_addr"] * BOARD_AXI_LINE_BYTES,
-        "axi_output_base_addr": BOARD_AXI_C0_BASE_ADDR + int(ddr_image.shape[0]) * BOARD_AXI_LINE_BYTES,
+        "axi_output_base_addr": BOARD_AXI_C0_BASE_ADDR + ddr_bases["ddr_output_scratch_base_addr"] * BOARD_AXI_LINE_BYTES,
         "axi_output_stride_bytes": BOARD_AXI_LINE_BYTES,
     }
     window_cfg.update(board_axi_bases)

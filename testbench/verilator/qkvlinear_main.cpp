@@ -91,21 +91,9 @@ int find_weight_tile_index(const PackedWords& weight_init, const uint32_t* words
 }
 
 const uint32_t* vec_words(const VQKVLinear___024root* root, int idx) {
-  switch (idx) {
-    case 0: return root->QKVLinear__DOT__vec_buffer_0_0;
-    case 1: return root->QKVLinear__DOT__vec_buffer_0_1;
-    case 2: return root->QKVLinear__DOT__vec_buffer_0_2;
-    case 64: return root->QKVLinear__DOT__vec_buffer_0_64;
-    case 65: return root->QKVLinear__DOT__vec_buffer_0_65;
-    case 66: return root->QKVLinear__DOT__vec_buffer_0_66;
-    case 128: return root->QKVLinear__DOT__vec_buffer_0_128;
-    case 129: return root->QKVLinear__DOT__vec_buffer_0_129;
-    case 130: return root->QKVLinear__DOT__vec_buffer_0_130;
-    case 189: return root->QKVLinear__DOT__vec_buffer_0_189;
-    case 190: return root->QKVLinear__DOT__vec_buffer_0_190;
-    case 191: return root->QKVLinear__DOT__vec_buffer_0_191;
-    default: return nullptr;
-  }
+  (void)root;
+  (void)idx;
+  return nullptr;
 }
 
 std::string format_vec_samples(const VQKVLinear___024root* root) {
@@ -340,10 +328,10 @@ int main(int argc, char** argv) {
         std::cerr << "QKV state cycle=" << cycle
                   << " prev=" << static_cast<int>(prev_state)
                   << " now=" << static_cast<int>(dut.rootp->QKVLinear__DOT__state)
-                  << " head=" << static_cast<int>(dut.rootp->QKVLinear__DOT__head_cnt_r)
-                  << " outCnt=" << static_cast<int>(dut.rootp->QKVLinear__DOT__output_cnt_r)
-                  << " batch=" << static_cast<int>(dut.rootp->QKVLinear__DOT__batch_cnt_r)
-                  << " prefill=" << static_cast<int>(dut.rootp->QKVLinear__DOT__prefill_cnt_r)
+                  << " head=" << static_cast<int>(dut.rootp->QKVLinear__DOT__headCntReg)
+                  << " outCnt=" << static_cast<int>(dut.rootp->QKVLinear__DOT__outputCntReg)
+                  << " batch=" << static_cast<int>(dut.rootp->QKVLinear__DOT__batchCntReg)
+                  << " prefill=" << static_cast<int>(dut.rootp->QKVLinear__DOT__prefillCntReg)
                   << " allDone=" << static_cast<int>(dut.rootp->QKVLinear__DOT__all_output_done)
                   << " tokenLast=" << static_cast<int>(dut.rootp->QKVLinear__DOT__token_last)
                   << " collectW=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collectWriteEnableReg)
@@ -422,11 +410,11 @@ int main(int argc, char** argv) {
       }
       if (debug && debug_collect_left > 0 &&
           (dut.rootp->QKVLinear__DOT__collectWriteEnableReg ||
-           (dut.rootp->QKVLinear__DOT__state == 2 && dut.rootp->QKVLinear__DOT__output_cnt_r == 0))) {
+           (dut.rootp->QKVLinear__DOT__state == 2 && dut.rootp->QKVLinear__DOT__outputCntReg == 0))) {
         std::cerr << "QKV collect cycle=" << cycle
                   << " state=" << static_cast<int>(dut.rootp->QKVLinear__DOT__state)
-                  << " head=" << static_cast<int>(dut.rootp->QKVLinear__DOT__head_cnt_r)
-                  << " outCnt=" << static_cast<int>(dut.rootp->QKVLinear__DOT__output_cnt_r)
+                  << " head=" << static_cast<int>(dut.rootp->QKVLinear__DOT__headCntReg)
+                  << " outCnt=" << static_cast<int>(dut.rootp->QKVLinear__DOT__outputCntReg)
                   << " collectW=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collectWriteEnableReg)
                   << " collectTok=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collectTokenReg)
                   << " collectVec=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collectVecReg)
@@ -451,7 +439,7 @@ int main(int argc, char** argv) {
                   << " lw_v=" << static_cast<int>(dut.rootp->QKVLinear__DOT__lw_inst__DOT__io_data_out_valid_REG)
                   << " lw_sel=" << static_cast<int>(dut.rootp->QKVLinear__DOT__lw_inst__DOT__io_data_out_sel_REG)
                   << " state=" << static_cast<int>(dut.rootp->QKVLinear__DOT__state)
-                  << " q_block=" << static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__block_cnt_r)
+                  << " q_block=" << static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__blockCntReg)
                   << " w0_0=" << hex_words(dut.rootp->QKVLinear__DOT__cu_inst__DOT__w0_0, 9)
                   << format_weight36(dut.rootp->QKVLinear__DOT__cu_inst__DOT__w0_0)
                   << " w1_0=" << hex_words(dut.rootp->QKVLinear__DOT__cu_inst__DOT__w1_0, 9)
@@ -464,13 +452,13 @@ int main(int argc, char** argv) {
         --debug_weight_left;
       }
       if (debug && debug_psum_left > 0 &&
-          static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__block_cnt_r) < 4 &&
+          static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__blockCntReg) < 4 &&
           (dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums0_0_0 != 0 ||
            dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums0_0_1 != 0 ||
            dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums0_0_2 != 0)) {
         std::cerr << "QKV psum cycle=" << cycle
-                  << " q_block=" << static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__block_cnt_r)
-                  << " psum_sel=" << static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psum_sel_r)
+                  << " q_block=" << static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__blockCntReg)
+                  << " psum_sel=" << static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psumSelReg)
                   << " out_bank=" << static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__out_bank_sel)
                   << " psum0=["
                   << static_cast<int32_t>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__psums0_0_0) << ","
@@ -501,33 +489,8 @@ int main(int argc, char** argv) {
                   << std::endl;
         --debug_psum_left;
       }
-      if (debug && has_v_chunk0 && dut.rootp->QKVLinear__DOT__state == 2 && debug_input_left > 0) {
-        const auto obs = unpack_int8_lanes(dut.rootp->QKVLinear__DOT__vec_buffer_0_128, 12);
-        const auto exp = unpack_int8_lanes(v_chunk0.beat(0), 12);
-        bool exact_same = true;
-        std::size_t diff_lane = 0;
-        int diff_obs = 0;
-        int diff_exp = 0;
-        for (std::size_t lane = 0; lane < 12; ++lane) {
-          if (obs[lane] != exp[lane]) {
-            exact_same = false;
-            diff_lane = lane;
-            diff_obs = obs[lane];
-            diff_exp = exp[lane];
-            break;
-          }
-        }
-        if (exact_same) {
-          std::cerr << "QKV vec_buffer v0 exact match" << std::endl;
-        } else {
-          std::cerr << "QKV vec_buffer v0 tolerated diff"
-                    << " lane=" << diff_lane
-                    << " observed=" << diff_obs
-                    << " expected=" << diff_exp
-                    << std::endl;
-        }
-        --debug_input_left;
-      }
+      (void)has_v_chunk0;
+      (void)v_chunk0;
       if (debug && debug_input_left > 0 && dut.rootp->QKVLinear__DOT__lu_inst__DOT__io_data_out_valid_REG) {
         const auto* pipe_words =
             &dut.rootp->QKVLinear__DOT__cu_inst__DOT__indata_pipreg__DOT__pipData_2_REG[0];
@@ -535,7 +498,7 @@ int main(int argc, char** argv) {
                   << " lu_block=" << static_cast<int>(dut.rootp->QKVLinear__DOT__lu_inst__DOT__block_cnt_r)
                   << " lu_addr=" << dut.io_data_addr
                   << " pipe2=" << hex_words(pipe_words, 3)
-                  << " cu_block=" << static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__block_cnt_r)
+                  << " cu_block=" << static_cast<int>(dut.rootp->QKVLinear__DOT__cu_inst__DOT__blockCntReg)
                   << std::endl;
         --debug_input_left;
       }
@@ -548,23 +511,17 @@ int main(int argc, char** argv) {
           static_cast<uint32_t>((dut.io_data_out >> 32) & 0xffffULL),
       };
       if (debug && debug_output_left > 0) {
-        const auto* vec0 = &dut.rootp->QKVLinear__DOT__vec_buffer_0_0[0];
-        const auto* vec64 = &dut.rootp->QKVLinear__DOT__vec_buffer_0_64[0];
-        const auto* vec128 = &dut.rootp->QKVLinear__DOT__vec_buffer_0_128[0];
         std::cerr << "QKV output beat=" << seen_beats
                   << " out=" << hex_words(observed_words, 2)
                   << " golden=" << hex_words(golden.beat(seen_beats), 2)
                   << " outLanes=" << format_qkv_output_lanes(observed_words)
                   << " goldLanes=" << format_qkv_output_lanes(golden.beat(seen_beats))
                   << " state=" << static_cast<int>(dut.rootp->QKVLinear__DOT__state)
-                  << " head_cnt=" << static_cast<int>(dut.rootp->QKVLinear__DOT__head_cnt_r)
-                  << " output_cnt=" << static_cast<int>(dut.rootp->QKVLinear__DOT__output_cnt_r)
+                  << " head_cnt=" << static_cast<int>(dut.rootp->QKVLinear__DOT__headCntReg)
+                  << " output_cnt=" << static_cast<int>(dut.rootp->QKVLinear__DOT__outputCntReg)
                   << " collectW=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collectWriteEnableReg)
                   << " collectTok=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collectTokenReg)
                   << " collectVec=" << static_cast<int>(dut.rootp->QKVLinear__DOT__collectVecReg)
-                  << " vec0=" << hex_words(vec0, 3) << format_int8_lane_list(vec0, 12)
-                  << " vec64=" << hex_words(vec64, 3) << format_int8_lane_list(vec64, 12)
-                  << " vec128=" << hex_words(vec128, 3) << format_int8_lane_list(vec128, 12)
                   << " qExp0="
                   << (has_q_rows ? hex_words(q_rows.beat(0), 3) + format_int8_lane_list(q_rows.beat(0), 12) : "n/a")
                   << " kExp0="
