@@ -361,6 +361,7 @@ hs_err_pid*
 # Large local model/data artifacts
 weight/
 logs/
+pipeline/opt128Mfinal.gz
 
 # Python cache
 __pycache__/

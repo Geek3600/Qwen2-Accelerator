@@ -40,3 +40,9 @@
 - CONTEXT.md is for recovery only, not for overriding the current task.
 - Do not continue the previous task unless the user explicitly asks to continue it.
 - When the user starts a new task, first restate the new task in one sentence and execute only that task.
+
+## 远程服务器
+- 远程服务器的IP地址：hyyuan@10.12.133.61和hyyuan@10.12.133.52
+- 已经设置好免密登录
+- 服务器上有8卡FPGA，我们将在这台机器上做最后的项目演示
+- sudo 密码通过安全渠道获取，不写入仓库；远程自动化运行时使用 `PYJM_SUDO_PASSWORD` 环境变量。
